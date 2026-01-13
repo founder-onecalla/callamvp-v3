@@ -77,6 +77,33 @@ serve(async (req) => {
             started_at: new Date().toISOString(),
           })
           .eq('id', callId)
+
+        // Start media streaming for Listen In feature
+        const audioRelayUrl = Deno.env.get('AUDIO_RELAY_URL')
+        const telnyxApiKeyForStream = Deno.env.get('TELNYX_API_KEY')
+
+        if (audioRelayUrl && telnyxApiKeyForStream) {
+          try {
+            const streamUrl = `${audioRelayUrl}?call_id=${callId}&type=telnyx`
+            await fetch(
+              `https://api.telnyx.com/v2/calls/${event.payload.call_control_id}/actions/streaming_start`,
+              {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${telnyxApiKeyForStream}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  stream_url: streamUrl,
+                  stream_track: 'both_tracks', // Stream both inbound and outbound audio
+                }),
+              }
+            )
+            console.log(`Started streaming for call ${callId} to ${streamUrl}`)
+          } catch (streamError) {
+            console.error('Failed to start streaming:', streamError)
+          }
+        }
         break
 
       case 'call.hangup':

@@ -65,6 +65,7 @@ serve(async (req) => {
     const telnyxConnectionId = Deno.env.get('TELNYX_CONNECTION_ID')
     const telnyxFromNumber = Deno.env.get('TELNYX_PHONE_NUMBER')
     const supabaseUrl = Deno.env.get('SUPABASE_URL')
+    const audioRelayUrl = Deno.env.get('AUDIO_RELAY_URL') // e.g., wss://your-relay.deno.dev
 
     if (!telnyxApiKey || !telnyxConnectionId || !telnyxFromNumber) {
       throw new Error('Telnyx credentials not configured')
