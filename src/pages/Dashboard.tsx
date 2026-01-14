@@ -7,16 +7,16 @@ export default function Dashboard() {
 
   return (
     <CallProvider>
-      <div className="min-h-screen flex flex-col bg-gray-950">
-        {/* Header */}
-        <header className="bg-gray-900 border-b border-gray-800 px-6 py-3">
-          <div className="max-w-3xl mx-auto flex items-center justify-between">
-            <h1 className="text-lg font-semibold">OneCalla</h1>
-            <div className="flex items-center gap-4">
-              <span className="text-gray-400 text-sm hidden sm:block">{user?.email}</span>
+      <div className="h-screen flex flex-col bg-white">
+        {/* Header - iMessage style */}
+        <header className="flex-shrink-0 bg-[#f8f8f8] border-b border-gray-200 px-4 py-3 backdrop-blur-lg bg-opacity-90">
+          <div className="max-w-2xl mx-auto flex items-center justify-between">
+            <h1 className="text-lg font-semibold text-gray-900">OneCalla</h1>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-gray-500 hidden sm:block">{user?.email}</span>
               <button
                 onClick={signOut}
-                className="text-sm text-gray-400 hover:text-white transition"
+                className="text-sm text-blue-500 hover:text-blue-600 font-medium"
               >
                 Sign out
               </button>
@@ -24,8 +24,8 @@ export default function Dashboard() {
           </div>
         </header>
 
-        {/* Chat - Full Width */}
-        <main className="flex-1 flex flex-col overflow-hidden">
+        {/* Chat Area - Takes remaining space */}
+        <main className="flex-1 overflow-hidden">
           <ChatContainer />
         </main>
       </div>

@@ -2,6 +2,83 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f2f2f7;
+  --bg-bubble-user: #007aff;
+  --bg-bubble-other: #e9e9eb;
+  --text-primary: #000000;
+  --text-secondary: #8e8e93;
+}
+
 body {
-  @apply bg-gray-950 text-gray-100;
+  @apply bg-[var(--bg-secondary)] text-[var(--text-primary)];
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Smooth animations */
+* {
+  @apply transition-colors duration-200;
+}
+
+/* Message bubble animations */
+@keyframes messageIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.message-bubble {
+  animation: messageIn 0.25s ease-out forwards;
+}
+
+/* Typing indicator animation */
+@keyframes bounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-4px); }
+}
+
+.typing-dot {
+  animation: bounce 1.4s ease-in-out infinite;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* Pulse animation for call status */
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+.pulse-ring {
+  animation: pulse-ring 1.5s ease-out infinite;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c7c7cc;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #8e8e93;
 }
