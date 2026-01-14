@@ -27,8 +27,34 @@ interface IvrPath {
   menu_path: IvrStep[]
 }
 
+// Helper to log call events for live status updates
+async function logCallEvent(
+  serviceClient: ReturnType<typeof createClient>,
+  callId: string,
+  eventType: string,
+  description: string,
+  metadata: Record<string, unknown> = {}
+) {
+  try {
+    await serviceClient.from('call_events').insert({
+      call_id: callId,
+      event_type: eventType,
+      description,
+      metadata,
+    })
+  } catch (error) {
+    console.error('Failed to log call event:', error)
+  }
+}
+
 // Helper to send DTMF tones
-async function sendDtmf(callControlId: string, digits: string, telnyxApiKey: string) {
+async function sendDtmf(
+  callControlId: string,
+  digits: string,
+  telnyxApiKey: string,
+  serviceClient: ReturnType<typeof createClient>,
+  callId: string
+) {
   try {
     await fetch(
       `https://api.telnyx.com/v2/calls/${callControlId}/actions/send_dtmf`,
@@ -42,8 +68,12 @@ async function sendDtmf(callControlId: string, digits: string, telnyxApiKey: str
       }
     )
     console.log(`Sent DTMF: ${digits}`)
+
+    // Log the DTMF event
+    await logCallEvent(serviceClient, callId, 'dtmf_sent', `Pressed ${digits}`, { digits })
   } catch (error) {
     console.error('Failed to send DTMF:', error)
+    await logCallEvent(serviceClient, callId, 'error', `Failed to send DTMF: ${digits}`, { digits, error: String(error) })
   }
 }
 
@@ -115,6 +145,8 @@ serve(async (req) => {
             telnyx_call_id: event.payload.call_control_id,
           })
           .eq('id', callId)
+
+        await logCallEvent(serviceClient, callId, 'status_change', 'Ringing...', { status: 'ringing' })
         break
 
       case 'call.answered':
@@ -125,6 +157,8 @@ serve(async (req) => {
             started_at: new Date().toISOString(),
           })
           .eq('id', callId)
+
+        await logCallEvent(serviceClient, callId, 'status_change', 'Call connected', { status: 'answered' })
 
         // Start media streaming for Listen In feature
         const audioRelayUrl = Deno.env.get('AUDIO_RELAY_URL')
@@ -172,6 +206,11 @@ serve(async (req) => {
             if (ivrPath?.menu_path && Array.isArray(ivrPath.menu_path)) {
               console.log(`Starting IVR navigation for ${ivrPath.company_name} - ${ivrPath.department}`)
 
+              await logCallEvent(serviceClient, callId, 'ivr_navigation', `Navigating ${ivrPath.company_name} phone menu`, {
+                company: ivrPath.company_name,
+                department: ivrPath.department
+              })
+
               // Update context status
               await serviceClient
                 .from('call_contexts')
@@ -191,16 +230,21 @@ serve(async (req) => {
                   const infoKey = step.action
                   if (context.gathered_info && context.gathered_info[infoKey]) {
                     digits = context.gathered_info[infoKey]
+                    await logCallEvent(serviceClient, callId, 'ivr_navigation', `Entering ${infoKey.replace(/_/g, ' ')}`, { step: step.step })
                   } else {
                     console.log(`Missing gathered info for: ${infoKey}, skipping step`)
+                    await logCallEvent(serviceClient, callId, 'ivr_navigation', `Waiting - need ${infoKey.replace(/_/g, ' ')}`, { step: step.step, missing: infoKey })
                     continue
                   }
+                } else {
+                  await logCallEvent(serviceClient, callId, 'ivr_navigation', step.note, { step: step.step, digits })
                 }
 
                 console.log(`IVR Step ${step.step}: ${step.note} - sending ${digits}`)
-                await sendDtmf(event.payload.call_control_id, digits, telnyxApiKey)
+                await sendDtmf(event.payload.call_control_id, digits, telnyxApiKey, serviceClient, callId)
               }
 
+              await logCallEvent(serviceClient, callId, 'ivr_navigation', 'Menu navigation complete, connecting to representative...', {})
               console.log('IVR navigation complete')
             }
           }
@@ -215,6 +259,24 @@ serve(async (req) => {
             ended_at: new Date().toISOString(),
           })
           .eq('id', callId)
+
+        // Get hangup reason for better description
+        const hangupCause = event.payload?.hangup_cause || 'normal'
+        let hangupDescription = 'Call ended'
+        if (hangupCause === 'normal_clearing') {
+          hangupDescription = 'Call ended'
+        } else if (hangupCause === 'busy') {
+          hangupDescription = 'Line was busy'
+        } else if (hangupCause === 'no_answer') {
+          hangupDescription = 'No answer'
+        } else if (hangupCause === 'call_rejected') {
+          hangupDescription = 'Call was declined'
+        }
+
+        await logCallEvent(serviceClient, callId, 'status_change', hangupDescription, {
+          status: 'ended',
+          hangup_cause: hangupCause
+        })
 
         // Update call context status
         await serviceClient
@@ -237,9 +299,11 @@ serve(async (req) => {
             confidence: transcription.confidence || null,
           })
 
-          // TODO: Intelligent IVR response based on transcription
-          // If the transcription detects a prompt like "press 1 for...",
-          // we could automatically respond based on the context
+          // Also log as event for live feed
+          await logCallEvent(serviceClient, callId, 'transcription', transcription.transcript, {
+            speaker,
+            confidence: transcription.confidence
+          })
         }
         break
 
@@ -248,25 +312,34 @@ serve(async (req) => {
         const result = event.payload.result
         console.log('AMD result:', result)
 
-        if (result === 'machine' && telnyxApiKey) {
-          // Optionally hang up on machine
-          await fetch(
-            `https://api.telnyx.com/v2/calls/${event.payload.call_control_id}/actions/hangup`,
-            {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${telnyxApiKey}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({}),
-            }
-          )
+        if (result === 'machine') {
+          await logCallEvent(serviceClient, callId, 'status_change', 'Reached voicemail', { amd_result: result })
+
+          if (telnyxApiKey) {
+            // Optionally hang up on machine
+            await fetch(
+              `https://api.telnyx.com/v2/calls/${event.payload.call_control_id}/actions/hangup`,
+              {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${telnyxApiKey}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({}),
+              }
+            )
+          }
+        } else if (result === 'human') {
+          await logCallEvent(serviceClient, callId, 'status_change', 'Person answered', { amd_result: result })
         }
         break
 
       case 'call.dtmf.received':
-        // Log DTMF tones received (could be useful for debugging)
+        // Log DTMF tones received
         console.log('DTMF received:', event.payload.digit)
+        await logCallEvent(serviceClient, callId, 'dtmf_received', `Received tone: ${event.payload.digit}`, {
+          digit: event.payload.digit
+        })
         break
 
       default:

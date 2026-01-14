@@ -1,16 +1,18 @@
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { supabase } from '../lib/supabase'
-import type { Call, Transcription } from '../lib/types'
+import type { Call, Transcription, CallEvent } from '../lib/types'
 import { useAuth } from '../lib/AuthContext'
 
 interface CallContextType {
   currentCall: Call | null
   transcriptions: Transcription[]
+  callEvents: CallEvent[]
   isLoading: boolean
   error: string | null
   startCall: (phoneNumber: string, contextId?: string) => Promise<void>
   hangUp: () => Promise<void>
   sendDtmf: (digits: string) => Promise<void>
+  lastSummary: string | null
 }
 
 const CallContext = createContext<CallContextType | null>(null)
@@ -19,8 +21,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth()
   const [currentCall, setCurrentCall] = useState<Call | null>(null)
   const [transcriptions, setTranscriptions] = useState<Transcription[]>([])
+  const [callEvents, setCallEvents] = useState<CallEvent[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [lastSummary, setLastSummary] = useState<string | null>(null)
+
+  // Track if we've already requested a summary for this call
+  const summaryRequestedRef = useRef<string | null>(null)
 
   // Subscribe to call updates
   useEffect(() => {
@@ -36,11 +43,32 @@ export function CallProvider({ children }: { children: ReactNode }) {
           table: 'calls',
           filter: `id=eq.${currentCall.id}`,
         },
-        (payload) => {
-          setCurrentCall(payload.new as Call)
-          if ((payload.new as Call).status === 'ended') {
+        async (payload) => {
+          const updatedCall = payload.new as Call
+          setCurrentCall(updatedCall)
+
+          // When call ends, request summary
+          if (updatedCall.status === 'ended' && summaryRequestedRef.current !== updatedCall.id) {
+            summaryRequestedRef.current = updatedCall.id
+
+            try {
+              const response = await supabase.functions.invoke('call-summary', {
+                body: { call_id: updatedCall.id },
+              })
+
+              if (response.data?.summary) {
+                setLastSummary(response.data.summary)
+              }
+            } catch (err) {
+              console.error('Failed to get call summary:', err)
+            }
+
             // Clear call after a delay so user can see final state
-            setTimeout(() => setCurrentCall(null), 3000)
+            setTimeout(() => {
+              setCurrentCall(null)
+              setCallEvents([])
+              setTranscriptions([])
+            }, 3000)
           }
         }
       )
@@ -76,6 +104,31 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
   }, [currentCall?.id])
 
+  // Subscribe to call events (for live status)
+  useEffect(() => {
+    if (!currentCall) return
+
+    const channel = supabase
+      .channel(`call-events-${currentCall.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'call_events',
+          filter: `call_id=eq.${currentCall.id}`,
+        },
+        (payload) => {
+          setCallEvents((prev) => [...prev, payload.new as CallEvent])
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [currentCall?.id])
+
   const startCall = useCallback(async (phoneNumber: string, contextId?: string) => {
     if (!session?.access_token) {
       setError('Not authenticated')
@@ -85,6 +138,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setIsLoading(true)
     setError(null)
     setTranscriptions([])
+    setCallEvents([])
+    setLastSummary(null)
+    summaryRequestedRef.current = null
 
     try {
       const response = await supabase.functions.invoke('call-start', {
@@ -150,11 +206,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
       value={{
         currentCall,
         transcriptions,
+        callEvents,
         isLoading,
         error,
         startCall,
         hangUp,
         sendDtmf,
+        lastSummary,
       }}
     >
       {children}

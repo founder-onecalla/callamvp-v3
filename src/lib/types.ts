@@ -33,6 +33,15 @@ export interface Message {
   created_at: string
 }
 
+export interface CallEvent {
+  id: string
+  call_id: string
+  event_type: 'status_change' | 'dtmf_sent' | 'dtmf_received' | 'ivr_navigation' | 'transcription' | 'error'
+  description: string
+  metadata: Record<string, unknown>
+  created_at: string
+}
+
 export interface ChatFunction {
   name: string
   arguments: Record<string, unknown>

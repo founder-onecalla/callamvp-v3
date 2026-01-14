@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useCall } from '../../hooks/useCall'
 import { useAudioStream } from '../../hooks/useAudioStream'
 
@@ -12,10 +12,21 @@ const statusConfig = {
   ended: { label: 'Ended', color: 'text-gray-400', dot: 'bg-gray-400' },
 }
 
+const eventTypeIcons: Record<string, string> = {
+  status_change: '📞',
+  dtmf_sent: '🔢',
+  dtmf_received: '🔢',
+  ivr_navigation: '🤖',
+  transcription: '💬',
+  error: '⚠️',
+}
+
 export default function CallCard() {
-  const { currentCall, transcriptions, hangUp, sendDtmf } = useCall()
+  const { currentCall, transcriptions, callEvents, hangUp, sendDtmf } = useCall()
+  const [isExpanded, setIsExpanded] = useState(false)
   const [showKeypad, setShowKeypad] = useState(false)
   const [duration, setDuration] = useState(0)
+  const eventsEndRef = useRef<HTMLDivElement>(null)
 
   const {
     isConnected: isListening,
@@ -40,6 +51,20 @@ export default function CallCard() {
     return () => clearInterval(interval)
   }, [currentCall?.status])
 
+  // Auto-scroll events
+  useEffect(() => {
+    if (isExpanded && eventsEndRef.current) {
+      eventsEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [callEvents, isExpanded])
+
+  // Auto-expand on first event
+  useEffect(() => {
+    if (callEvents.length === 1) {
+      setIsExpanded(true)
+    }
+  }, [callEvents.length])
+
   if (!currentCall) return null
 
   const status = statusConfig[currentCall.status]
@@ -47,10 +72,16 @@ export default function CallCard() {
   const seconds = duration % 60
   const timeDisplay = `${minutes}:${seconds.toString().padStart(2, '0')}`
 
+  // Filter events for display (exclude transcription events since we show those separately)
+  const displayEvents = callEvents.filter(e => e.event_type !== 'transcription')
+
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden max-w-sm">
-      {/* Header */}
-      <div className="px-4 py-3 bg-gray-50 border-b border-gray-100">
+      {/* Header - Clickable to expand */}
+      <div
+        className="px-4 py-3 bg-gray-50 border-b border-gray-100 cursor-pointer hover:bg-gray-100 transition-colors"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="relative">
@@ -61,25 +92,56 @@ export default function CallCard() {
             </div>
             <span className={`font-medium text-sm ${status.color}`}>{status.label}</span>
           </div>
-          {currentCall.status === 'answered' && (
-            <span className="text-gray-400 font-mono text-sm">{timeDisplay}</span>
-          )}
+          <div className="flex items-center gap-2">
+            {currentCall.status === 'answered' && (
+              <span className="text-gray-400 font-mono text-sm">{timeDisplay}</span>
+            )}
+            <svg
+              className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </div>
         </div>
         <p className="text-sm text-gray-600 mt-1 font-medium">{currentCall.phone_number}</p>
       </div>
 
-      {/* Transcription */}
-      {transcriptions.length > 0 && (
-        <div className="px-4 py-3 max-h-40 overflow-y-auto space-y-2 bg-white">
-          {transcriptions.map((t) => (
-            <div key={t.id} className="text-sm">
-              <span className={`font-medium ${t.speaker === 'user' ? 'text-blue-500' : 'text-gray-500'}`}>
-                {t.speaker === 'user' ? 'You' : 'Them'}:
-              </span>{' '}
-              <span className="text-gray-700">{t.content}</span>
+      {/* Expanded content */}
+      {isExpanded && (
+        <>
+          {/* Live Events Feed */}
+          {displayEvents.length > 0 && (
+            <div className="px-4 py-3 max-h-32 overflow-y-auto bg-gray-50 border-b border-gray-100">
+              <div className="space-y-1.5">
+                {displayEvents.map((event) => (
+                  <div key={event.id} className="flex items-start gap-2 text-xs">
+                    <span className="flex-shrink-0">{eventTypeIcons[event.event_type] || '•'}</span>
+                    <span className="text-gray-600">{event.description}</span>
+                  </div>
+                ))}
+                <div ref={eventsEndRef} />
+              </div>
             </div>
-          ))}
-        </div>
+          )}
+
+          {/* Transcription */}
+          {transcriptions.length > 0 && (
+            <div className="px-4 py-3 max-h-40 overflow-y-auto space-y-2 bg-white border-b border-gray-100">
+              <p className="text-xs text-gray-400 uppercase tracking-wide font-medium">Live Transcript</p>
+              {transcriptions.map((t) => (
+                <div key={t.id} className="text-sm">
+                  <span className={`font-medium ${t.speaker === 'user' ? 'text-blue-500' : 'text-gray-500'}`}>
+                    {t.speaker === 'user' ? 'You' : 'Them'}:
+                  </span>{' '}
+                  <span className="text-gray-700">{t.content}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {/* Controls */}
