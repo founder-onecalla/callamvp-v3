@@ -30,10 +30,7 @@ export default function ChatContainer() {
           {/* Empty state */}
           {messages.length === 0 && !currentCall && (
             <div className="text-center py-20">
-              <div className="w-16 h-16 bg-blue-500 rounded-full flex items-center justify-center mx-auto mb-4">
-                <span className="text-3xl">📞</span>
-              </div>
-              <h2 className="text-xl font-semibold text-gray-900 mb-2">OneCalla</h2>
+              <h2 className="text-xl font-semibold text-gray-900 mb-2">Hi there</h2>
               <p className="text-gray-500 mb-6">I can help you make phone calls</p>
               <div className="space-y-2 text-sm text-gray-400">
                 <p>"Call 555-123-4567"</p>

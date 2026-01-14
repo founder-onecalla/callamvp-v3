@@ -24,11 +24,7 @@ export default function Login() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4 bg-[#f2f2f7]">
       <div className="w-full max-w-sm">
-        {/* Logo */}
         <div className="text-center mb-8">
-          <div className="w-20 h-20 bg-blue-500 rounded-[22px] flex items-center justify-center mx-auto mb-4 shadow-lg">
-            <span className="text-4xl">📞</span>
-          </div>
           <h1 className="text-2xl font-semibold text-gray-900">OneCalla</h1>
           <p className="text-gray-500 mt-1">Sign in to continue</p>
         </div>
