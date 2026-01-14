@@ -1,14 +1,17 @@
 import { useState, useRef, useEffect } from 'react'
 import { useChat } from '../../hooks/useChat'
+import { useCall } from '../../hooks/useCall'
+import CallCard from './CallCard'
 
 export default function ChatContainer() {
   const { messages, isLoading, error, sendMessage } = useChat()
+  const { currentCall } = useCall()
   const [input, setInput] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [messages, currentCall])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -20,19 +23,19 @@ export default function ChatContainer() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="px-6 py-4 border-b border-gray-800">
-        <h2 className="font-semibold">AI Assistant</h2>
-        <p className="text-sm text-gray-400">Ask me to place calls, send tones, or hang up</p>
-      </div>
-
+    <div className="flex flex-col h-full max-w-3xl mx-auto">
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
-        {messages.length === 0 && (
-          <div className="text-center text-gray-500 mt-8">
-            <p className="mb-2">No messages yet</p>
-            <p className="text-sm">Try saying "Call 555-123-4567" or "Press 1"</p>
+        {messages.length === 0 && !currentCall && (
+          <div className="text-center text-gray-500 mt-16">
+            <p className="text-4xl mb-4">📞</p>
+            <p className="text-lg mb-2">Hi! I can help you make phone calls.</p>
+            <p className="text-sm text-gray-600">Try saying:</p>
+            <div className="mt-3 space-y-1 text-sm text-gray-400">
+              <p>"Call 555-123-4567"</p>
+              <p>"Dial +1 773 977 6657"</p>
+              <p>"Call my doctor at 312-555-0100"</p>
+            </div>
           </div>
         )}
 
@@ -42,7 +45,7 @@ export default function ChatContainer() {
             className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             <div
-              className={`max-w-[80%] rounded-lg px-4 py-3 ${
+              className={`max-w-[80%] rounded-2xl px-4 py-3 ${
                 message.role === 'user'
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-800 text-gray-100'
@@ -53,9 +56,16 @@ export default function ChatContainer() {
           </div>
         ))}
 
+        {/* Show CallCard inline when there's an active call */}
+        {currentCall && (
+          <div className="flex justify-start">
+            <CallCard />
+          </div>
+        )}
+
         {isLoading && (
           <div className="flex justify-start">
-            <div className="bg-gray-800 rounded-lg px-4 py-3">
+            <div className="bg-gray-800 rounded-2xl px-4 py-3">
               <div className="flex gap-1">
                 <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" />
                 <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce [animation-delay:0.1s]" />
@@ -66,7 +76,7 @@ export default function ChatContainer() {
         )}
 
         {error && (
-          <div className="bg-red-500/10 border border-red-500 text-red-500 px-4 py-3 rounded">
+          <div className="bg-red-500/10 border border-red-500 text-red-500 px-4 py-3 rounded-lg text-sm">
             {error}
           </div>
         )}
@@ -75,25 +85,25 @@ export default function ChatContainer() {
       </div>
 
       {/* Input */}
-      <form onSubmit={handleSubmit} className="p-4 border-t border-gray-800">
-        <div className="flex gap-3">
+      <div className="border-t border-gray-800 p-4">
+        <form onSubmit={handleSubmit} className="flex gap-3">
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask me to place a call..."
+            placeholder="Say something like 'Call 555-1234'..."
             disabled={isLoading}
-            className="flex-1 px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition disabled:opacity-50"
+            className="flex-1 px-4 py-3 bg-gray-800 border border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition disabled:opacity-50"
           />
           <button
             type="submit"
             disabled={isLoading || !input.trim()}
-            className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 rounded-lg font-medium transition"
+            className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 rounded-xl font-medium transition"
           >
             Send
           </button>
-        </div>
-      </form>
+        </form>
+      </div>
     </div>
   )
 }
