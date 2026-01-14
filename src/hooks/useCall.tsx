@@ -135,6 +135,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
       return
     }
 
+    console.log('[useCall] startCall invoked with:', { phoneNumber, contextId })
     setIsLoading(true)
     setError(null)
     setTranscriptions([])
@@ -143,12 +144,14 @@ export function CallProvider({ children }: { children: ReactNode }) {
     summaryRequestedRef.current = null
 
     try {
+      console.log('[useCall] Calling call-start Edge Function...')
       const response = await supabase.functions.invoke('call-start', {
         body: {
           phone_number: phoneNumber,
           context_id: contextId,
         },
       })
+      console.log('[useCall] call-start response:', response)
 
       if (response.error) {
         throw new Error(response.error.message)

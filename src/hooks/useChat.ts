@@ -50,6 +50,7 @@ export function useChat(): UseChatReturn {
       case 'place_call': {
         // Include context_id if one was created during info gathering
         const contextId = args.context_id as string || callContextRef.current
+        console.log('[useChat] Calling startCall with phone:', args.phone_number, 'context:', contextId)
         await startCall(args.phone_number as string, contextId || undefined)
         callContextRef.current = null // Reset after call starts
         return `Initiating call to ${args.phone_number}...`
@@ -112,6 +113,7 @@ export function useChat(): UseChatReturn {
 
       // Handle function calls from the AI
       if (function_call) {
+        console.log('[useChat] GPT called function:', function_call.name, function_call.arguments)
         const functionResultText = await handleFunctionCall(
           function_call.name,
           function_call.arguments,
