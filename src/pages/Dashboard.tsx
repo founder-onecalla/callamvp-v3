@@ -13,7 +13,7 @@ export default function Dashboard() {
         {/* Header */}
         <header className="bg-gray-900 border-b border-gray-800 px-6 py-4">
           <div className="flex items-center justify-between">
-            <h1 className="text-xl font-bold">Callam</h1>
+            <h1 className="text-xl font-bold">OneCalla</h1>
             <div className="flex items-center gap-4">
               <span className="text-gray-400 text-sm">{user?.email}</span>
               <button

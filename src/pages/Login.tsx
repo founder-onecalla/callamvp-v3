@@ -25,7 +25,7 @@ export default function Login() {
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-md">
         <div className="bg-gray-900 rounded-lg p-8 shadow-xl">
-          <h1 className="text-2xl font-bold text-center mb-8">Sign in to Callam</h1>
+          <h1 className="text-2xl font-bold text-center mb-8">Sign in to OneCalla</h1>
 
           <form onSubmit={handleSubmit} className="space-y-6">
             {error && (
