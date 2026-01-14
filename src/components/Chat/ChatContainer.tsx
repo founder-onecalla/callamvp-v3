@@ -33,8 +33,9 @@ export default function ChatContainer() {
               <h2 className="text-xl font-semibold text-gray-900 mb-2">Hi there</h2>
               <p className="text-gray-500 mb-6">I can help you make phone calls</p>
               <div className="space-y-2 text-sm text-gray-400">
-                <p>"Call 555-123-4567"</p>
-                <p>"Dial my doctor at 312-555-0100"</p>
+                <p>"Call Xfinity about my internet"</p>
+                <p>"Make a reservation at a restaurant"</p>
+                <p>"Call my doctor's office"</p>
               </div>
             </div>
           )}

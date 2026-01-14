@@ -6,6 +6,52 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+interface IvrStep {
+  step: number
+  prompt: string
+  action: string
+  note: string
+}
+
+interface CallContext {
+  id: string
+  ivr_path_id: string | null
+  gathered_info: Record<string, string>
+  status: string
+}
+
+interface IvrPath {
+  id: string
+  company_name: string
+  department: string
+  menu_path: IvrStep[]
+}
+
+// Helper to send DTMF tones
+async function sendDtmf(callControlId: string, digits: string, telnyxApiKey: string) {
+  try {
+    await fetch(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/send_dtmf`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${telnyxApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ digits }),
+      }
+    )
+    console.log(`Sent DTMF: ${digits}`)
+  } catch (error) {
+    console.error('Failed to send DTMF:', error)
+  }
+}
+
+// Helper to delay execution
+function delay(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -58,6 +104,8 @@ serve(async (req) => {
       })
     }
 
+    const telnyxApiKey = Deno.env.get('TELNYX_API_KEY')
+
     switch (eventType) {
       case 'call.initiated':
         await serviceClient
@@ -80,9 +128,8 @@ serve(async (req) => {
 
         // Start media streaming for Listen In feature
         const audioRelayUrl = Deno.env.get('AUDIO_RELAY_URL')
-        const telnyxApiKeyForStream = Deno.env.get('TELNYX_API_KEY')
 
-        if (audioRelayUrl && telnyxApiKeyForStream) {
+        if (audioRelayUrl && telnyxApiKey) {
           try {
             const streamUrl = `${audioRelayUrl}?call_id=${callId}&type=telnyx`
             await fetch(
@@ -90,18 +137,72 @@ serve(async (req) => {
               {
                 method: 'POST',
                 headers: {
-                  'Authorization': `Bearer ${telnyxApiKeyForStream}`,
+                  'Authorization': `Bearer ${telnyxApiKey}`,
                   'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
                   stream_url: streamUrl,
-                  stream_track: 'both_tracks', // Stream both inbound and outbound audio
+                  stream_track: 'both_tracks',
                 }),
               }
             )
             console.log(`Started streaming for call ${callId} to ${streamUrl}`)
           } catch (streamError) {
             console.error('Failed to start streaming:', streamError)
+          }
+        }
+
+        // Check for IVR path and auto-navigate
+        if (telnyxApiKey) {
+          // Get call context with IVR path
+          const { data: context } = await serviceClient
+            .from('call_contexts')
+            .select('id, ivr_path_id, gathered_info, status')
+            .eq('call_id', callId)
+            .maybeSingle() as { data: CallContext | null }
+
+          if (context?.ivr_path_id) {
+            // Get the IVR path
+            const { data: ivrPath } = await serviceClient
+              .from('ivr_paths')
+              .select('id, company_name, department, menu_path')
+              .eq('id', context.ivr_path_id)
+              .single() as { data: IvrPath | null }
+
+            if (ivrPath?.menu_path && Array.isArray(ivrPath.menu_path)) {
+              console.log(`Starting IVR navigation for ${ivrPath.company_name} - ${ivrPath.department}`)
+
+              // Update context status
+              await serviceClient
+                .from('call_contexts')
+                .update({ status: 'in_call' })
+                .eq('id', context.id)
+
+              // Navigate IVR menu steps with delays
+              for (const step of ivrPath.menu_path) {
+                // Wait for IVR prompt to play
+                await delay(3000)
+
+                let digits = step.action
+
+                // Check if action requires dynamic input from gathered info
+                if (step.action.includes('_')) {
+                  // Action like "account_number" means use gathered info
+                  const infoKey = step.action
+                  if (context.gathered_info && context.gathered_info[infoKey]) {
+                    digits = context.gathered_info[infoKey]
+                  } else {
+                    console.log(`Missing gathered info for: ${infoKey}, skipping step`)
+                    continue
+                  }
+                }
+
+                console.log(`IVR Step ${step.step}: ${step.note} - sending ${digits}`)
+                await sendDtmf(event.payload.call_control_id, digits, telnyxApiKey)
+              }
+
+              console.log('IVR navigation complete')
+            }
           }
         }
         break
@@ -114,6 +215,12 @@ serve(async (req) => {
             ended_at: new Date().toISOString(),
           })
           .eq('id', callId)
+
+        // Update call context status
+        await serviceClient
+          .from('call_contexts')
+          .update({ status: 'completed' })
+          .eq('call_id', callId)
         break
 
       case 'call.transcription':
@@ -129,6 +236,10 @@ serve(async (req) => {
             content: transcription.transcript,
             confidence: transcription.confidence || null,
           })
+
+          // TODO: Intelligent IVR response based on transcription
+          // If the transcription detects a prompt like "press 1 for...",
+          // we could automatically respond based on the context
         }
         break
 
@@ -137,23 +248,25 @@ serve(async (req) => {
         const result = event.payload.result
         console.log('AMD result:', result)
 
-        if (result === 'machine') {
+        if (result === 'machine' && telnyxApiKey) {
           // Optionally hang up on machine
-          const telnyxApiKey = Deno.env.get('TELNYX_API_KEY')
-          if (telnyxApiKey) {
-            await fetch(
-              `https://api.telnyx.com/v2/calls/${event.payload.call_control_id}/actions/hangup`,
-              {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${telnyxApiKey}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({}),
-              }
-            )
-          }
+          await fetch(
+            `https://api.telnyx.com/v2/calls/${event.payload.call_control_id}/actions/hangup`,
+            {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${telnyxApiKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({}),
+            }
+          )
         }
+        break
+
+      case 'call.dtmf.received':
+        // Log DTMF tones received (could be useful for debugging)
+        console.log('DTMF received:', event.payload.digit)
         break
 
       default:

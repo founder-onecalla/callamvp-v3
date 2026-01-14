@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import type { Message } from '../lib/types'
 import { useCall } from './useCall'
@@ -17,17 +17,41 @@ export function useChat(): UseChatReturn {
   const [error, setError] = useState<string | null>(null)
   const { startCall, hangUp, sendDtmf, currentCall } = useCall()
 
-  const handleFunctionCall = useCallback(async (name: string, args: Record<string, unknown>) => {
+  // Track context_id for pre-call intelligence
+  const callContextRef = useRef<string | null>(null)
+
+  const handleFunctionCall = useCallback(async (
+    name: string,
+    args: Record<string, unknown>,
+    functionResult?: { success: boolean; data?: unknown }
+  ) => {
     switch (name) {
-      case 'place_call':
-        await startCall(args.phone_number as string)
+      case 'place_call': {
+        // Include context_id if one was created during info gathering
+        const contextId = args.context_id as string || callContextRef.current
+        await startCall(args.phone_number as string, contextId || undefined)
+        callContextRef.current = null // Reset after call starts
         return `Initiating call to ${args.phone_number}...`
+      }
       case 'hang_up_call':
         await hangUp()
+        callContextRef.current = null
         return 'Hanging up the call...'
       case 'send_dtmf':
         await sendDtmf(args.digits as string)
         return `Sent DTMF tones: ${args.digits}`
+      case 'create_call_context':
+        // Store the context_id for when we place the call
+        if (functionResult?.success && functionResult.data) {
+          const data = functionResult.data as { context_id: string }
+          callContextRef.current = data.context_id
+        }
+        return null // Backend handles the response
+      case 'save_memory':
+      case 'save_contact':
+      case 'lookup_contact':
+        // These are handled by the backend, just return null
+        return null
       default:
         return `Unknown function: ${name}`
     }
@@ -63,25 +87,31 @@ export function useChat(): UseChatReturn {
         throw new Error(response.error.message)
       }
 
-      const { message, function_call } = response.data
+      const { message, function_call, function_result } = response.data
 
       // Handle function calls from the AI
       if (function_call) {
-        const functionResult = await handleFunctionCall(
+        const functionResultText = await handleFunctionCall(
           function_call.name,
-          function_call.arguments
+          function_call.arguments,
+          function_result
         )
 
-        const assistantMessage: Message = {
-          id: crypto.randomUUID(),
-          user_id: '',
-          role: 'assistant',
-          content: message || functionResult,
-          call_id: currentCall?.id ?? null,
-          created_at: new Date().toISOString(),
-        }
+        // Use message from AI, or fallback to function result text
+        const displayMessage = message || functionResultText
 
-        setMessages((prev) => [...prev, assistantMessage])
+        if (displayMessage) {
+          const assistantMessage: Message = {
+            id: crypto.randomUUID(),
+            user_id: '',
+            role: 'assistant',
+            content: displayMessage,
+            call_id: currentCall?.id ?? null,
+            created_at: new Date().toISOString(),
+          }
+
+          setMessages((prev) => [...prev, assistantMessage])
+        }
       } else if (message) {
         const assistantMessage: Message = {
           id: crypto.randomUUID(),
@@ -103,6 +133,7 @@ export function useChat(): UseChatReturn {
 
   const clearMessages = useCallback(() => {
     setMessages([])
+    callContextRef.current = null
   }, [])
 
   return {

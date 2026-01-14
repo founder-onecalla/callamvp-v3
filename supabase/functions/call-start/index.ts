@@ -33,11 +33,11 @@ serve(async (req) => {
     }
     console.log('call-start: User authenticated', user.id)
 
-    const { phone_number } = await req.json()
+    const { phone_number, context_id } = await req.json()
     if (!phone_number) {
       throw new Error('Phone number is required')
     }
-    console.log('call-start: Phone number', phone_number)
+    console.log('call-start: Phone number', phone_number, 'context_id:', context_id || 'none')
 
     // Format phone number (basic cleanup)
     let formattedNumber = phone_number.replace(/[^\d+]/g, '')
@@ -67,6 +67,19 @@ serve(async (req) => {
       throw new Error(`Failed to create call record: ${insertError.message}`)
     }
     console.log('call-start: Call record created', call.id)
+
+    // Link call context to this call if context_id provided
+    if (context_id) {
+      await serviceClient
+        .from('call_contexts')
+        .update({
+          call_id: call.id,
+          status: 'ready'
+        })
+        .eq('id', context_id)
+        .eq('user_id', user.id)
+      console.log('call-start: Linked call context', context_id)
+    }
 
     // Get Telnyx credentials
     const telnyxApiKey = Deno.env.get('TELNYX_API_KEY')

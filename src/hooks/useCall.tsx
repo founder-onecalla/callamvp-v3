@@ -8,7 +8,7 @@ interface CallContextType {
   transcriptions: Transcription[]
   isLoading: boolean
   error: string | null
-  startCall: (phoneNumber: string) => Promise<void>
+  startCall: (phoneNumber: string, contextId?: string) => Promise<void>
   hangUp: () => Promise<void>
   sendDtmf: (digits: string) => Promise<void>
 }
@@ -76,7 +76,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
   }, [currentCall?.id])
 
-  const startCall = useCallback(async (phoneNumber: string) => {
+  const startCall = useCallback(async (phoneNumber: string, contextId?: string) => {
     if (!session?.access_token) {
       setError('Not authenticated')
       return
@@ -88,7 +88,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
     try {
       const response = await supabase.functions.invoke('call-start', {
-        body: { phone_number: phoneNumber },
+        body: {
+          phone_number: phoneNumber,
+          context_id: contextId,
+        },
       })
 
       if (response.error) {
