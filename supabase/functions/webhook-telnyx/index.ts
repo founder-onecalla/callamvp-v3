@@ -298,12 +298,7 @@ serve(async (req) => {
             content: transcription.transcript,
             confidence: transcription.confidence || null,
           })
-
-          // Also log as event for live feed
-          await logCallEvent(serviceClient, callId, 'transcription', transcription.transcript, {
-            speaker,
-            confidence: transcription.confidence
-          })
+          // Note: Not logging to call_events - frontend subscribes to transcriptions table directly
         }
         break
 
