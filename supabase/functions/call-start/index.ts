@@ -12,10 +12,13 @@ serve(async (req) => {
   }
 
   try {
+    console.log('call-start: Starting...')
+
     const authHeader = req.headers.get('Authorization')
     if (!authHeader) {
       throw new Error('Missing authorization header')
     }
+    console.log('call-start: Auth header present')
 
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
@@ -25,13 +28,16 @@ serve(async (req) => {
 
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
+      console.error('call-start: Auth error', authError)
       throw new Error('Unauthorized')
     }
+    console.log('call-start: User authenticated', user.id)
 
     const { phone_number } = await req.json()
     if (!phone_number) {
       throw new Error('Phone number is required')
     }
+    console.log('call-start: Phone number', phone_number)
 
     // Format phone number (basic cleanup)
     let formattedNumber = phone_number.replace(/[^\d+]/g, '')
@@ -57,8 +63,10 @@ serve(async (req) => {
       .single()
 
     if (insertError) {
+      console.error('call-start: DB insert error', insertError)
       throw new Error(`Failed to create call record: ${insertError.message}`)
     }
+    console.log('call-start: Call record created', call.id)
 
     // Get Telnyx credentials
     const telnyxApiKey = Deno.env.get('TELNYX_API_KEY')
@@ -68,8 +76,14 @@ serve(async (req) => {
     const audioRelayUrl = Deno.env.get('AUDIO_RELAY_URL') // e.g., wss://your-relay.deno.dev
 
     if (!telnyxApiKey || !telnyxConnectionId || !telnyxFromNumber) {
+      console.error('call-start: Missing Telnyx credentials', {
+        hasApiKey: !!telnyxApiKey,
+        hasConnectionId: !!telnyxConnectionId,
+        hasFromNumber: !!telnyxFromNumber
+      })
       throw new Error('Telnyx credentials not configured')
     }
+    console.log('call-start: Telnyx credentials present, initiating call...')
 
     // Initiate Telnyx call
     const telnyxResponse = await fetch('https://api.telnyx.com/v2/calls', {
@@ -119,6 +133,7 @@ serve(async (req) => {
     })
 
   } catch (error) {
+    console.error('call-start error:', error)
     return new Response(JSON.stringify({ error: error.message }), {
       status: 400,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
