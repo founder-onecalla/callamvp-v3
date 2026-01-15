@@ -236,7 +236,11 @@ serve(async (req) => {
         const audioBridgeUrl = Deno.env.get('AUDIO_BRIDGE_URL')
         const audioRelayUrl = Deno.env.get('AUDIO_RELAY_URL')
 
-        if (audioBridgeUrl && telnyxApiKey) {
+        // TEMPORARILY DISABLED: Audio bridge has connectivity issues with Deno Deploy
+        // Force legacy mode until we fix the WebSocket connection issue
+        const useAudioBridge = false // was: audioBridgeUrl && telnyxApiKey
+
+        if (useAudioBridge && audioBridgeUrl && telnyxApiKey) {
           // Using OpenAI Realtime API - stream audio to bridge
           // Bridge handles: audio conversion, OpenAI communication, transcript capture
           try {
@@ -287,9 +291,18 @@ serve(async (req) => {
           }
         } else {
           // Legacy mode: Telnyx transcription + voice-agent function
+          console.log('[webhook] Using LEGACY mode (audio bridge disabled)')
+
           if (telnyxApiKey && callId) {
             await startTranscription(event.payload.call_control_id, telnyxApiKey, callId, serviceClient)
           }
+
+          // Trigger voice agent opening greeting immediately
+          // Don't wait for AMD - speak right away so the user hears something
+          const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+          const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+          console.log('[webhook] Triggering voice agent opening greeting')
+          await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, true)
 
           // Start media streaming for Listen In feature (legacy audio relay)
           if (audioRelayUrl && telnyxApiKey) {
