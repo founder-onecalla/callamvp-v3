@@ -130,7 +130,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
   }, [currentCall?.id])
 
   const startCall = useCallback(async (phoneNumber: string, contextId?: string) => {
+    console.log('[useCall] startCall invoked with:', { phoneNumber, contextId })
+    console.log('[useCall] Session state:', { hasSession: !!session, hasAccessToken: !!session?.access_token })
+
     if (!session?.access_token) {
+      console.error('[useCall] No access token - user not authenticated')
       setError('Not authenticated')
       return
     }
@@ -143,6 +147,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     summaryRequestedRef.current = null
 
     try {
+      console.log('[useCall] Calling call-start Edge Function...')
       const response = await supabase.functions.invoke('call-start', {
         body: {
           phone_number: phoneNumber,
@@ -150,12 +155,17 @@ export function CallProvider({ children }: { children: ReactNode }) {
         },
       })
 
+      console.log('[useCall] call-start response:', response)
+
       if (response.error) {
+        console.error('[useCall] call-start error:', response.error)
         throw new Error(response.error.message)
       }
 
+      console.log('[useCall] Call created successfully:', response.data.call)
       setCurrentCall(response.data.call)
     } catch (err) {
+      console.error('[useCall] startCall exception:', err)
       setError(err instanceof Error ? err.message : 'Failed to start call')
     } finally {
       setIsLoading(false)

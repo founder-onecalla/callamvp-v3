@@ -46,11 +46,16 @@ export function useChat(): UseChatReturn {
     args: Record<string, unknown>,
     functionResult?: { success: boolean; data?: unknown }
   ) => {
+    console.log('[useChat] handleFunctionCall:', { name, args, functionResult })
+
     switch (name) {
       case 'place_call': {
+        console.log('[useChat] Handling place_call function')
         // Include context_id if one was created during info gathering
         const contextId = args.context_id as string || callContextRef.current
+        console.log('[useChat] Calling startCall with:', { phone: args.phone_number, contextId })
         await startCall(args.phone_number as string, contextId || undefined)
+        console.log('[useChat] startCall completed')
         callContextRef.current = null // Reset after call starts
         return `Initiating call to ${args.phone_number}...`
       }
