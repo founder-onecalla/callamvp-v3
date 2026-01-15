@@ -113,10 +113,6 @@ serve(async (req) => {
         webhook_url_method: 'POST',
         answering_machine_detection: 'detect',
         client_state: btoa(JSON.stringify({ call_id: call.id, user_id: user.id })),
-        transcription: {
-          transcription_engine: 'B',
-          transcription_tracks: 'both',
-        },
       }),
     })
 
