@@ -175,8 +175,9 @@ Usually no info needed, but offer to save contact if new
 1. User states intent (e.g., "Call Xfinity about my internet")
 2. Check if you have user's relevant saved memories
 3. Ask for any missing required information naturally
-4. When ready, place the call
-5. Auto-save any new information they provide (with save_memory)
+4. When you have all required info, ask user to confirm (e.g., "Ready to call?")
+5. **CRITICAL**: When user confirms (yes/ok/ready/proceed/confirm/let's go/etc.), you MUST immediately call the place_call function with the phone number. Do not just say you're calling - actually call the function.
+6. Auto-save any new information they provide (with save_memory)
 
 ## IVR Navigation
 When calling known companies, you have IVR menu paths. After the call connects, guide the user or use send_dtmf to navigate menus.
@@ -358,6 +359,11 @@ serve(async (req) => {
       throw new Error('OpenAI API key not configured')
     }
 
+    // Detect if user is confirming (yes/ok/proceed/confirm/ready/let's go/etc.)
+    const lastUserMessage = messages[messages.length - 1]?.content?.toLowerCase() || ''
+    const confirmationKeywords = ['yes', 'ok', 'okay', 'proceed', 'confirm', 'ready', "let's go", 'lets go', 'sure', 'yep', 'yeah', 'go ahead']
+    const isConfirming = confirmationKeywords.some(keyword => lastUserMessage.includes(keyword))
+
     const serviceClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -372,6 +378,13 @@ serve(async (req) => {
       .replace('{USER_CONTACTS}', contactsText)
       .replace('{IVR_PATHS}', ivrText)
 
+    // Force place_call if user is confirming and we have phone context
+    let functionCallParam: 'auto' | { name: string } = 'auto'
+    if (isConfirming && messages.some(m => m.content?.toLowerCase().includes('call') || m.content?.toLowerCase().includes('phone'))) {
+      functionCallParam = { name: 'place_call' }
+      console.log('[chat] User is confirming, forcing place_call function')
+    }
+
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -385,7 +398,7 @@ serve(async (req) => {
           ...messages
         ],
         functions,
-        function_call: 'auto',
+        function_call: functionCallParam,
         temperature: 0.7,
         max_tokens: 500,
       }),

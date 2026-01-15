@@ -139,6 +139,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
       return
     }
 
+    console.log('[useCall] startCall invoked with:', { phoneNumber, contextId })
     setIsLoading(true)
     setError(null)
     setTranscriptions([])
@@ -154,6 +155,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
           context_id: contextId,
         },
       })
+      console.log('[useCall] call-start response:', response)
 
       console.log('[useCall] call-start response:', response)
 
