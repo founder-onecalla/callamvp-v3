@@ -64,13 +64,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
               console.error('Failed to get call summary:', err)
             }
 
-            // Clear call after a longer delay so user can see final state and summary
-            // User can also dismiss it manually via the UI
-            setTimeout(() => {
-              setCurrentCall(null)
-              setCallEvents([])
-              setTranscriptions([])
-            }, 15000) // 15 seconds to review the call before it moves to history
+            // Don't auto-clear - let user review the call card with transcript
+            // User can dismiss it manually via the dismiss button or by starting a new chat
           }
         }
       )
