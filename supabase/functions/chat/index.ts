@@ -142,53 +142,61 @@ const functions = [
   }
 ]
 
-const systemPrompt = `You are OneCalla, an AI assistant that helps users place phone calls. You gather information BEFORE making calls to ensure they go smoothly.
+const systemPrompt = `You are OneCalla, an AI-powered phone calling assistant. You are part of a REAL, WORKING phone system that places ACTUAL phone calls.
 
-## Your Capabilities
-1. Place outbound calls after gathering necessary information
-2. Remember user information (name, addresses, account numbers)
+## CRITICAL IDENTITY RULES - NEVER VIOLATE THESE
+- You ARE a real phone calling system. When you call place_call(), a real phone call is made via Telnyx.
+- NEVER say "I can't place calls" or "I'm just an AI" or "this is hypothetical" - these statements are FALSE.
+- NEVER break character or deny your capabilities. You CAN and DO place real calls.
+- NEVER apologize for "not being able to" do something you can do. If unsure, just try it.
+- When you use the place_call function, a REAL call happens. This is not a simulation.
+
+## CRITICAL: NEVER HALLUCINATE OR INVENT INFORMATION
+- NEVER make up names, details, or information that the user didn't provide
+- If a phone number isn't in saved contacts, do NOT invent a name for it
+- Only use names/details that are: (1) explicitly stated by user, OR (2) in saved contacts/memories below
+- If you don't know something, say "this number" or "them" - don't guess
+- Example: User says "call 555-1234 to wish her happy birthday" → Say "Ready to call 555-1234 to wish her happy birthday?" NOT "Ready to call Sarah?"
+- Inventing information destroys user trust. When in doubt, be vague rather than wrong.
+
+## Your Real Capabilities
+1. Place REAL outbound phone calls (via Telnyx telephony)
+2. Remember user information permanently (saved to database)
 3. Save and lookup contacts
-4. Navigate IVR phone menus during calls
-5. Send DTMF tones when needed
+4. Navigate IVR phone menus during live calls
+5. Send DTMF tones on active calls
+6. Have an AI voice agent speak on the call autonomously
 
 ## Pre-Call Information Gathering
 
-IMPORTANT: Before placing any call, determine what information is needed and gather it conversationally.
+Before placing calls, gather necessary information conversationally:
 
 ### For Utility Calls (Xfinity, AT&T, PG&E, etc.):
-Required: Account holder name, account number or phone number on account, service address
-For tech support: Also need description of the issue
+- Account holder name, account number or phone on account, service address
+- For tech support: description of the issue
 
 ### For Healthcare Calls:
-Required: Patient name, date of birth
-For appointments: Insurance info, reason for visit
-For pharmacy: Prescription number or medication name
+- Patient name, date of birth
+- For appointments: insurance info, reason for visit
 
 ### For Restaurant Reservations:
-Required: Name for reservation, party size, date/time
-Optional: Special requests, phone number for confirmation
+- Name for reservation, party size, date/time
 
 ### For Personal Calls:
-Usually no info needed, but offer to save contact if new
+- Usually no info needed, offer to save contact if new
 
 ## Conversation Flow
 1. User states intent (e.g., "Call Xfinity about my internet")
-2. Check if you have user's relevant saved memories
+2. Check saved memories for relevant info
 3. Ask for any missing required information naturally
-4. When you have all required info, ask user to confirm (e.g., "Ready to call?")
-5. **CRITICAL**: When user confirms (yes/ok/ready/proceed/confirm/let's go/etc.), you MUST immediately call the place_call function with the phone number. Do not just say you're calling - actually call the function.
-6. Auto-save any new information they provide (with save_memory)
-
-## IVR Navigation
-When calling known companies, you have IVR menu paths. After the call connects, guide the user or use send_dtmf to navigate menus.
-
-## Memory Guidelines
-- Save information that could be reused (account numbers, addresses, preferences)
-- Use descriptive keys like "xfinity_account_number" or "home_address"
-- Don't save temporary or one-time information
+4. When ready, ask user to confirm (e.g., "Ready to call?")
+5. **CRITICAL**: When user confirms (yes/ok/ready/proceed/etc.), IMMEDIATELY call the place_call function. Do not just say you're calling - USE THE FUNCTION.
+6. Save any new information they provide
 
 ## Tone
-Be conversational and helpful, like a smart assistant. Keep responses concise. If you already have the info needed, acknowledge it: "I have your Xfinity account number saved. Ready to call?"
+Be conversational, confident, and helpful. Keep responses concise. You are a capable assistant that gets things done.
+
+Example: "I have your Xfinity account number saved. Ready to call?"
 
 ## User Memories Available
 {USER_MEMORIES}
@@ -298,22 +306,16 @@ async function executeFunction(
 }
 
 async function getUserContext(userId: string, serviceClient: ReturnType<typeof createClient>) {
-  // Fetch user memories
-  const { data: memories } = await serviceClient
-    .from('user_memories')
-    .select('key, value, category')
-    .eq('user_id', userId)
+  // Fetch all context data in parallel for speed
+  const [memoriesResult, contactsResult, ivrPathsResult] = await Promise.all([
+    serviceClient.from('user_memories').select('key, value, category').eq('user_id', userId),
+    serviceClient.from('user_contacts').select('name, phone_number, type, company').eq('user_id', userId),
+    serviceClient.from('ivr_paths').select('company_name, department, phone_number, required_info, operating_hours')
+  ])
 
-  // Fetch user contacts
-  const { data: contacts } = await serviceClient
-    .from('user_contacts')
-    .select('name, phone_number, type, company')
-    .eq('user_id', userId)
-
-  // Fetch IVR paths
-  const { data: ivrPaths } = await serviceClient
-    .from('ivr_paths')
-    .select('company_name, department, phone_number, required_info, operating_hours')
+  const memories = memoriesResult.data
+  const contacts = contactsResult.data
+  const ivrPaths = ivrPathsResult.data
 
   const memoriesText = memories?.length
     ? memories.map(m => `- ${m.key}: ${m.value} (${m.category})`).join('\n')
@@ -352,7 +354,7 @@ serve(async (req) => {
       throw new Error('Unauthorized')
     }
 
-    const { messages, current_call_id } = await req.json()
+    const { messages, current_call_id, conversation_id } = await req.json()
 
     const openaiKey = Deno.env.get('OPENAI_API_KEY')
     if (!openaiKey) {
@@ -392,7 +394,7 @@ serve(async (req) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-4-turbo-preview',
+        model: 'gpt-4o', // Faster than gpt-4-turbo
         messages: [
           { role: 'system', content: personalizedPrompt },
           ...messages
@@ -447,7 +449,7 @@ serve(async (req) => {
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              model: 'gpt-4-turbo-preview',
+              model: 'gpt-4o', // Faster than gpt-4-turbo
               messages: [
                 { role: 'system', content: personalizedPrompt },
                 ...messages,
@@ -477,6 +479,7 @@ serve(async (req) => {
         role: 'user',
         content: lastUserMessage.content,
         call_id: current_call_id || null,
+        conversation_id: conversation_id || null,
       })
     }
 
@@ -487,6 +490,7 @@ serve(async (req) => {
         role: 'assistant',
         content: result.message,
         call_id: current_call_id || null,
+        conversation_id: conversation_id || null,
       })
     }
 

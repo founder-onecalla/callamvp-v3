@@ -1,0 +1,24 @@
+{
+  "name": "onecalla-audio-bridge",
+  "version": "1.0.0",
+  "tasks": {
+    "start": "deno run --allow-net --allow-env main.ts",
+    "dev": "deno run --allow-net --allow-env --watch main.ts",
+    "deploy": "deployctl deploy --project=onecalla-bridge main.ts"
+  },
+  "imports": {
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.47.0",
+    "std/": "https://deno.land/std@0.208.0/"
+  },
+  "compilerOptions": {
+    "strict": true
+  },
+  "deploy": {
+    "project": "6427d5c2-aaa5-464e-896a-fef230956541",
+    "exclude": [
+      "**/node_modules"
+    ],
+    "include": [],
+    "entrypoint": "main.ts"
+  }
+}

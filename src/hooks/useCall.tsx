@@ -12,6 +12,7 @@ interface CallContextType {
   startCall: (phoneNumber: string, contextId?: string) => Promise<void>
   hangUp: () => Promise<void>
   sendDtmf: (digits: string) => Promise<void>
+  dismissCall: () => void
   lastSummary: string | null
 }
 
@@ -63,12 +64,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
               console.error('Failed to get call summary:', err)
             }
 
-            // Clear call after a delay so user can see final state
+            // Clear call after a longer delay so user can see final state and summary
+            // User can also dismiss it manually via the UI
             setTimeout(() => {
               setCurrentCall(null)
               setCallEvents([])
               setTranscriptions([])
-            }, 3000)
+            }, 15000) // 15 seconds to review the call before it moves to history
           }
         }
       )
@@ -79,10 +81,56 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
   }, [currentCall?.id])
 
-  // Subscribe to transcriptions
+  // Subscribe to transcriptions via bridge WebSocket (if available) for lower latency
+  // Falls back to Supabase Realtime for reliability
   useEffect(() => {
     if (!currentCall) return
 
+    const bridgeUrl = import.meta.env.VITE_AUDIO_BRIDGE_URL
+
+    // If bridge URL is configured, connect for real-time transcripts
+    let ws: WebSocket | null = null
+    if (bridgeUrl) {
+      try {
+        const wsUrl = `${bridgeUrl.replace('https://', 'wss://').replace('http://', 'ws://')}/frontend?call_id=${currentCall.id}`
+        ws = new WebSocket(wsUrl)
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+            if (data.event === 'transcript') {
+              // Add transcript with a generated ID since it comes from WebSocket
+              const transcript: Transcription = {
+                id: crypto.randomUUID(),
+                call_id: currentCall.id,
+                speaker: data.speaker,
+                content: data.text,
+                confidence: null,
+                created_at: new Date().toISOString(),
+              }
+              setTranscriptions((prev) => [...prev, transcript])
+            } else if (data.event === 'error') {
+              console.error('[useCall] Bridge error:', data.message)
+            }
+          } catch (err) {
+            console.error('[useCall] Failed to parse bridge message:', err)
+          }
+        }
+
+        ws.onerror = (err) => {
+          console.error('[useCall] Bridge WebSocket error:', err)
+        }
+
+        ws.onclose = () => {
+          console.log('[useCall] Bridge WebSocket closed')
+        }
+      } catch (err) {
+        console.error('[useCall] Failed to connect to bridge:', err)
+      }
+    }
+
+    // Always subscribe to Supabase Realtime as backup
+    // (bridge also stores transcripts in DB, so duplicates are filtered by ID)
     const channel = supabase
       .channel(`transcriptions-${currentCall.id}`)
       .on(
@@ -94,12 +142,22 @@ export function CallProvider({ children }: { children: ReactNode }) {
           filter: `call_id=eq.${currentCall.id}`,
         },
         (payload) => {
-          setTranscriptions((prev) => [...prev, payload.new as Transcription])
+          const newTranscript = payload.new as Transcription
+          // Avoid duplicates - check if we already have this transcript
+          setTranscriptions((prev) => {
+            if (prev.some(t => t.id === newTranscript.id)) {
+              return prev
+            }
+            return [...prev, newTranscript]
+          })
         }
       )
       .subscribe()
 
     return () => {
+      if (ws) {
+        ws.close()
+      }
       supabase.removeChannel(channel)
     }
   }, [currentCall?.id])
@@ -213,6 +271,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
   }, [currentCall])
 
+  // Manually dismiss the call card (moves it to history)
+  const dismissCall = useCallback(() => {
+    setCurrentCall(null)
+    setCallEvents([])
+    setTranscriptions([])
+  }, [])
+
   return (
     <CallContext.Provider
       value={{
@@ -224,6 +289,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
         startCall,
         hangUp,
         sendDtmf,
+        dismissCall,
         lastSummary,
       }}
     >

@@ -7,8 +7,9 @@ interface UseChatReturn {
   messages: Message[]
   isLoading: boolean
   error: string | null
-  sendMessage: (content: string) => Promise<void>
+  sendMessage: (content: string, conversationId?: string | null) => Promise<void>
   clearMessages: () => void
+  loadConversation: (conversationId: string) => Promise<void>
 }
 
 export function useChat(): UseChatReturn {
@@ -34,6 +35,7 @@ export function useChat(): UseChatReturn {
         role: 'assistant',
         content: lastSummary,
         call_id: null,
+        conversation_id: null,
         created_at: new Date().toISOString(),
       }
 
@@ -83,7 +85,7 @@ export function useChat(): UseChatReturn {
     }
   }, [startCall, hangUp, sendDtmf])
 
-  const sendMessage = useCallback(async (content: string) => {
+  const sendMessage = useCallback(async (content: string, conversationId?: string | null) => {
     setIsLoading(true)
     setError(null)
 
@@ -93,6 +95,7 @@ export function useChat(): UseChatReturn {
       role: 'user',
       content,
       call_id: currentCall?.id ?? null,
+      conversation_id: conversationId ?? null,
       created_at: new Date().toISOString(),
     }
 
@@ -106,6 +109,7 @@ export function useChat(): UseChatReturn {
             content: m.content,
           })),
           current_call_id: currentCall?.id,
+          conversation_id: conversationId,
         },
       })
 
@@ -134,6 +138,7 @@ export function useChat(): UseChatReturn {
             role: 'assistant',
             content: displayMessage,
             call_id: currentCall?.id ?? null,
+            conversation_id: conversationId ?? null,
             created_at: new Date().toISOString(),
           }
 
@@ -146,6 +151,7 @@ export function useChat(): UseChatReturn {
           role: 'assistant',
           content: message,
           call_id: currentCall?.id ?? null,
+          conversation_id: conversationId ?? null,
           created_at: new Date().toISOString(),
         }
 
@@ -164,11 +170,34 @@ export function useChat(): UseChatReturn {
     addedSummariesRef.current.clear()
   }, [])
 
+  const loadConversation = useCallback(async (conversationId: string) => {
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      const { data, error: fetchError } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: true })
+
+      if (fetchError) throw fetchError
+
+      setMessages(data || [])
+      addedSummariesRef.current.clear()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load conversation')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
   return {
     messages,
     isLoading,
     error,
     sendMessage,
     clearMessages,
+    loadConversation,
   }
 }

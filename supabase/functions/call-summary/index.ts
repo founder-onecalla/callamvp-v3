@@ -38,38 +38,22 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
-    // Fetch call details
-    const { data: call, error: callError } = await serviceClient
-      .from('calls')
-      .select('*')
-      .eq('id', call_id)
-      .eq('user_id', user.id)
-      .single()
+    // Fetch all call data in parallel for speed
+    const [callResult, contextResult, transcriptionsResult, eventsResult] = await Promise.all([
+      serviceClient.from('calls').select('*').eq('id', call_id).eq('user_id', user.id).single(),
+      serviceClient.from('call_contexts').select('*, ivr_paths(*)').eq('call_id', call_id).maybeSingle(),
+      serviceClient.from('transcriptions').select('*').eq('call_id', call_id).order('created_at', { ascending: true }),
+      serviceClient.from('call_events').select('*').eq('call_id', call_id).order('created_at', { ascending: true })
+    ])
 
-    if (callError || !call) {
+    const call = callResult.data
+    const context = contextResult.data
+    const transcriptions = transcriptionsResult.data
+    const events = eventsResult.data
+
+    if (callResult.error || !call) {
       throw new Error('Call not found')
     }
-
-    // Fetch call context (purpose, company, gathered info)
-    const { data: context } = await serviceClient
-      .from('call_contexts')
-      .select('*, ivr_paths(*)')
-      .eq('call_id', call_id)
-      .maybeSingle()
-
-    // Fetch transcriptions
-    const { data: transcriptions } = await serviceClient
-      .from('transcriptions')
-      .select('*')
-      .eq('call_id', call_id)
-      .order('created_at', { ascending: true })
-
-    // Fetch call events (IVR actions, status changes)
-    const { data: events } = await serviceClient
-      .from('call_events')
-      .select('*')
-      .eq('call_id', call_id)
-      .order('created_at', { ascending: true })
 
     // Calculate call duration
     let duration = 0
@@ -152,7 +136,7 @@ Write a natural, conversational summary of what happened on this call.`
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-4-turbo-preview',
+        model: 'gpt-4o', // Faster than gpt-4-turbo
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }

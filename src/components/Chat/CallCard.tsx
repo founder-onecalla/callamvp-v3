@@ -22,7 +22,7 @@ const eventTypeIcons: Record<string, string> = {
 }
 
 export default function CallCard() {
-  const { currentCall, transcriptions, callEvents, hangUp, sendDtmf } = useCall()
+  const { currentCall, transcriptions, callEvents, hangUp, sendDtmf, dismissCall } = useCall()
   const [isExpanded, setIsExpanded] = useState(false)
   const [showKeypad, setShowKeypad] = useState(false)
   const [duration, setDuration] = useState(0)
@@ -198,8 +198,34 @@ export default function CallCard() {
 
       {/* Ended state */}
       {currentCall.status === 'ended' && (
-        <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 text-center">
-          <p className="text-sm text-gray-400">Call ended</p>
+        <div className="px-4 py-3 bg-gray-50 border-t border-gray-100">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-gray-400">
+                {currentCall.outcome === 'voicemail' ? '📫' : currentCall.outcome === 'completed' ? '✓' : '📞'}
+              </span>
+              <span className="text-sm text-gray-500">
+                {currentCall.outcome === 'voicemail' ? 'Left voicemail' :
+                 currentCall.outcome === 'completed' ? 'Call completed' :
+                 currentCall.outcome === 'busy' ? 'Line was busy' :
+                 currentCall.outcome === 'no_answer' ? 'No answer' : 'Call ended'}
+              </span>
+              {duration > 0 && (
+                <span className="text-xs text-gray-400">({timeDisplay})</span>
+              )}
+            </div>
+            <button
+              onClick={dismissCall}
+              className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              Dismiss
+            </button>
+          </div>
+          {transcriptions.length > 0 && (
+            <p className="text-xs text-gray-400 mt-2">
+              View full transcript in Call History below
+            </p>
+          )}
         </div>
       )}
     </div>

@@ -82,6 +82,78 @@ function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+// Helper to trigger voice agent
+async function triggerVoiceAgent(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  callId: string,
+  transcription?: string,
+  isOpening = false
+) {
+  try {
+    const response = await fetch(`${supabaseUrl}/functions/v1/voice-agent`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${serviceRoleKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        call_id: callId,
+        transcription,
+        is_opening: isOpening,
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      console.error('[webhook] Voice agent error:', error)
+    } else {
+      console.log('[webhook] Voice agent triggered successfully')
+    }
+  } catch (error) {
+    console.error('[webhook] Failed to trigger voice agent:', error)
+  }
+}
+
+// Helper to start transcription on a call
+async function startTranscription(
+  callControlId: string,
+  telnyxApiKey: string,
+  callId: string,
+  serviceClient: ReturnType<typeof createClient>
+) {
+  try {
+    console.log('[webhook] Starting transcription for call:', callControlId)
+
+    const response = await fetch(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/transcription_start`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${telnyxApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          language: 'en',
+          transcription_tracks: 'both', // Transcribe both sides of the conversation
+        }),
+      }
+    )
+
+    const responseText = await response.text()
+
+    if (!response.ok) {
+      console.error('[webhook] Failed to start transcription:', responseText)
+      await logCallEvent(serviceClient, callId, 'error', 'Failed to start transcription', { error: responseText })
+    } else {
+      console.log('[webhook] Transcription started successfully:', responseText)
+      await logCallEvent(serviceClient, callId, 'transcription_started', 'Listening to conversation', {})
+    }
+  } catch (error) {
+    console.error('[webhook] Transcription start error:', error)
+  }
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -160,12 +232,25 @@ serve(async (req) => {
 
         await logCallEvent(serviceClient, callId, 'status_change', 'Call connected', { status: 'answered' })
 
-        // Start media streaming for Listen In feature
+        // Check if using OpenAI Realtime API bridge
+        const audioBridgeUrl = Deno.env.get('AUDIO_BRIDGE_URL')
         const audioRelayUrl = Deno.env.get('AUDIO_RELAY_URL')
 
-        if (audioRelayUrl && telnyxApiKey) {
+        if (audioBridgeUrl && telnyxApiKey) {
+          // Using OpenAI Realtime API - stream audio to bridge
+          // Bridge handles: audio conversion, OpenAI communication, transcript capture
           try {
-            const streamUrl = `${audioRelayUrl}?call_id=${callId}&type=telnyx`
+            const streamUrl = `${audioBridgeUrl}/telnyx-stream?call_id=${callId}`
+
+            // Notify bridge to prepare session
+            await fetch(`${audioBridgeUrl}/start-session`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ call_id: callId })
+            })
+
+            // Start Telnyx media streaming to bridge
+            // Using 'rtp' mode for raw audio that we can convert
             await fetch(
               `https://api.telnyx.com/v2/calls/${event.payload.call_control_id}/actions/streaming_start`,
               {
@@ -177,12 +262,53 @@ serve(async (req) => {
                 body: JSON.stringify({
                   stream_url: streamUrl,
                   stream_track: 'both_tracks',
+                  stream_bidirectional_mode: 'rtp', // Use RTP for mulaw audio that we can process
                 }),
               }
             )
-            console.log(`Started streaming for call ${callId} to ${streamUrl}`)
-          } catch (streamError) {
-            console.error('Failed to start streaming:', streamError)
+            console.log(`[webhook] Started Realtime API streaming for call ${callId} to ${streamUrl}`)
+            await logCallEvent(serviceClient, callId, 'realtime_api', 'Voice AI connected via Realtime API', { bridge_url: audioBridgeUrl })
+
+            // DON'T start Telnyx transcription - OpenAI Realtime handles it
+            // DON'T trigger voice-agent - OpenAI Realtime handles responses
+
+          } catch (bridgeError) {
+            console.error('[webhook] Failed to start Realtime API bridge:', bridgeError)
+            await logCallEvent(serviceClient, callId, 'error', 'Failed to connect Voice AI', { error: String(bridgeError) })
+
+            // Fallback to legacy voice agent
+            if (telnyxApiKey && callId) {
+              await startTranscription(event.payload.call_control_id, telnyxApiKey, callId, serviceClient)
+            }
+          }
+        } else {
+          // Legacy mode: Telnyx transcription + voice-agent function
+          if (telnyxApiKey && callId) {
+            await startTranscription(event.payload.call_control_id, telnyxApiKey, callId, serviceClient)
+          }
+
+          // Start media streaming for Listen In feature (legacy audio relay)
+          if (audioRelayUrl && telnyxApiKey) {
+            try {
+              const streamUrl = `${audioRelayUrl}?call_id=${callId}&type=telnyx`
+              await fetch(
+                `https://api.telnyx.com/v2/calls/${event.payload.call_control_id}/actions/streaming_start`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${telnyxApiKey}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    stream_url: streamUrl,
+                    stream_track: 'both_tracks',
+                  }),
+                }
+              )
+              console.log(`Started streaming for call ${callId} to ${streamUrl}`)
+            } catch (streamError) {
+              console.error('Failed to start streaming:', streamError)
+            }
           }
         }
 
@@ -251,31 +377,60 @@ serve(async (req) => {
         }
         break
 
-      case 'call.hangup':
+      case 'call.hangup': {
+        // Get the call to calculate duration
+        const { data: existingCall } = await serviceClient
+          .from('calls')
+          .select('started_at, amd_result')
+          .eq('id', callId)
+          .single()
+
+        const endedAt = new Date()
+        let durationSeconds = null
+
+        if (existingCall?.started_at) {
+          const startedAt = new Date(existingCall.started_at)
+          durationSeconds = Math.floor((endedAt.getTime() - startedAt.getTime()) / 1000)
+        }
+
+        // Determine outcome based on hangup cause and AMD result
+        const hangupCause = event.payload?.hangup_cause || 'normal'
+        let outcome = 'completed'
+        let hangupDescription = 'Call ended'
+
+        if (hangupCause === 'normal_clearing' || hangupCause === 'normal') {
+          // Check if it was a voicemail based on stored AMD result
+          outcome = existingCall?.amd_result === 'machine' ? 'voicemail' : 'completed'
+          hangupDescription = outcome === 'voicemail' ? 'Left voicemail' : 'Call completed'
+        } else if (hangupCause === 'busy') {
+          outcome = 'busy'
+          hangupDescription = 'Line was busy'
+        } else if (hangupCause === 'no_answer') {
+          outcome = 'no_answer'
+          hangupDescription = 'No answer'
+        } else if (hangupCause === 'call_rejected') {
+          outcome = 'declined'
+          hangupDescription = 'Call was declined'
+        } else if (hangupCause === 'originator_cancel') {
+          outcome = 'cancelled'
+          hangupDescription = 'Call cancelled'
+        }
+
         await serviceClient
           .from('calls')
           .update({
             status: 'ended',
-            ended_at: new Date().toISOString(),
+            ended_at: endedAt.toISOString(),
+            outcome,
+            duration_seconds: durationSeconds,
           })
           .eq('id', callId)
 
-        // Get hangup reason for better description
-        const hangupCause = event.payload?.hangup_cause || 'normal'
-        let hangupDescription = 'Call ended'
-        if (hangupCause === 'normal_clearing') {
-          hangupDescription = 'Call ended'
-        } else if (hangupCause === 'busy') {
-          hangupDescription = 'Line was busy'
-        } else if (hangupCause === 'no_answer') {
-          hangupDescription = 'No answer'
-        } else if (hangupCause === 'call_rejected') {
-          hangupDescription = 'Call was declined'
-        }
-
         await logCallEvent(serviceClient, callId, 'status_change', hangupDescription, {
           status: 'ended',
-          hangup_cause: hangupCause
+          outcome,
+          hangup_cause: hangupCause,
+          duration_seconds: durationSeconds
         })
 
         // Update call context status
@@ -284,28 +439,86 @@ serve(async (req) => {
           .update({ status: 'completed' })
           .eq('call_id', callId)
         break
+      }
 
-      case 'call.transcription':
+      case 'call.transcription': {
         // Handle real-time transcription
+        // NOTE: This event is only received in LEGACY mode (Telnyx transcription)
+        // When using OpenAI Realtime API bridge, transcriptions come from the bridge WebSocket
         const transcription = event.payload.transcription_data
-        if (transcription?.transcript) {
-          // Determine speaker based on leg
-          const speaker = event.payload.leg === 'self' ? 'user' : 'remote'
 
-          await serviceClient.from('transcriptions').insert({
-            call_id: callId,
+        // Check if using Realtime API bridge - if so, this is unexpected (ignore)
+        const usingRealtimeBridge = !!Deno.env.get('AUDIO_BRIDGE_URL')
+        if (usingRealtimeBridge) {
+          console.log('[webhook] Transcription event received but using Realtime API - ignoring')
+          break
+        }
+
+        // Log full transcription payload for debugging
+        console.log('[webhook] Transcription event received:', JSON.stringify({
+          leg: event.payload.leg,
+          transcript: transcription?.transcript,
+          is_final: transcription?.is_final,
+          confidence: transcription?.confidence,
+          full_payload: event.payload
+        }))
+
+        if (transcription?.transcript && transcription.transcript.trim().length > 0) {
+          // Determine speaker based on leg
+          // For OUTBOUND calls (we're calling them):
+          // - 'self' = our side (AI agent speaking)
+          // - anything else = the person we called (remote party)
+          const isOurAI = event.payload.leg === 'self'
+          const speaker = isOurAI ? 'agent' : 'remote'
+
+          console.log('[webhook] Processing transcription:', {
             speaker,
-            content: transcription.transcript,
-            confidence: transcription.confidence || null,
+            isOurAI,
+            leg: event.payload.leg,
+            is_final: transcription.is_final,
+            text: transcription.transcript.substring(0, 50)
           })
-          // Note: Not logging to call_events - frontend subscribes to transcriptions table directly
+
+          // Only store final transcriptions to avoid duplicates
+          if (transcription.is_final !== false) {
+            await serviceClient.from('transcriptions').insert({
+              call_id: callId,
+              speaker,
+              content: transcription.transcript,
+              confidence: transcription.confidence || null,
+            })
+          }
+
+          // If REMOTE party spoke (not our AI) and it's a final transcription, trigger voice agent
+          const isFinal = transcription.is_final === true || transcription.is_final === undefined
+
+          if (!isOurAI && isFinal) {
+            console.log('[webhook] Remote party spoke, triggering voice agent response')
+            console.log('[webhook] Their words:', transcription.transcript)
+
+            const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+            const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+            await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, transcription.transcript, false)
+          } else if (isOurAI) {
+            console.log('[webhook] AI agent spoke, not triggering response (avoiding loop)')
+          }
         }
         break
+      }
 
-      case 'call.machine.detection.ended':
+      case 'call.machine.detection.ended': {
         // Handle answering machine detection
         const result = event.payload.result
         console.log('AMD result:', result)
+
+        // Store AMD result in the call record
+        await serviceClient
+          .from('calls')
+          .update({ amd_result: result })
+          .eq('id', callId)
+
+        // Check if using Realtime API bridge
+        const usingRealtimeBridgeForAmd = !!Deno.env.get('AUDIO_BRIDGE_URL')
 
         if (result === 'machine') {
           await logCallEvent(serviceClient, callId, 'status_change', 'Reached voicemail', { amd_result: result })
@@ -326,8 +539,20 @@ serve(async (req) => {
           }
         } else if (result === 'human') {
           await logCallEvent(serviceClient, callId, 'status_change', 'Person answered', { amd_result: result })
+
+          // Only trigger legacy voice-agent if NOT using Realtime API
+          // The Realtime API bridge handles the opening greeting automatically
+          if (!usingRealtimeBridgeForAmd) {
+            const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+            const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+            console.log('[webhook] Human detected, triggering voice agent opening')
+            await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, true)
+          } else {
+            console.log('[webhook] Human detected, Realtime API bridge handles greeting')
+          }
         }
         break
+      }
 
       case 'call.dtmf.received':
         // Log DTMF tones received

@@ -4,6 +4,7 @@ interface ImportMetaEnv {
   readonly VITE_SUPABASE_URL: string
   readonly VITE_SUPABASE_ANON_KEY: string
   readonly VITE_AUDIO_RELAY_URL?: string
+  readonly VITE_AUDIO_BRIDGE_URL?: string
 }
 
 interface ImportMeta {
