@@ -360,9 +360,9 @@ serve(async (req) => {
     }
 
     // Detect if user is confirming (yes/ok/proceed/confirm/ready/let's go/etc.)
-    const lastUserMessage = messages[messages.length - 1]?.content?.toLowerCase() || ''
+    const lastUserMessageContent = messages[messages.length - 1]?.content?.toLowerCase() || ''
     const confirmationKeywords = ['yes', 'ok', 'okay', 'proceed', 'confirm', 'ready', "let's go", 'lets go', 'sure', 'yep', 'yeah', 'go ahead']
-    const isConfirming = confirmationKeywords.some(keyword => lastUserMessage.includes(keyword))
+    const isConfirming = confirmationKeywords.some(keyword => lastUserMessageContent.includes(keyword))
 
     const serviceClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
