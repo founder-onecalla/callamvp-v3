@@ -120,42 +120,6 @@ User Info: ${JSON.stringify(callContext.gathered_info || {})}`
   return data.choices[0].message.content
 }
 
-async function textToSpeech(
-  elevenLabsKey: string,
-  text: string
-): Promise<ArrayBuffer> {
-  // Using ElevenLabs API - Rachel voice (warm, friendly)
-  const voiceId = 'EXAVITQu4vr4xnSDxMaL' // Rachel - clear, warm female voice
-
-  const response = await fetch(
-    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-    {
-      method: 'POST',
-      headers: {
-        'Accept': 'audio/mpeg',
-        'Content-Type': 'application/json',
-        'xi-api-key': elevenLabsKey,
-      },
-      body: JSON.stringify({
-        text,
-        model_id: 'eleven_turbo_v2',
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.75,
-          style: 0.5,
-          use_speaker_boost: true
-        }
-      }),
-    }
-  )
-
-  if (!response.ok) {
-    throw new Error(`ElevenLabs API error: ${await response.text()}`)
-  }
-
-  return await response.arrayBuffer()
-}
-
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -174,11 +138,10 @@ serve(async (req) => {
     )
 
     const openaiKey = Deno.env.get('OPENAI_API_KEY')
-    const elevenLabsKey = Deno.env.get('ELEVENLABS_API_KEY')
     const telnyxApiKey = Deno.env.get('TELNYX_API_KEY')
 
-    if (!openaiKey || !elevenLabsKey || !telnyxApiKey) {
-      throw new Error('Missing required API keys')
+    if (!openaiKey || !telnyxApiKey) {
+      throw new Error('Missing required API keys (OPENAI_API_KEY, TELNYX_API_KEY)')
     }
 
     // Get all call data in parallel for speed (saves ~300ms)

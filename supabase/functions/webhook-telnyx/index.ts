@@ -566,6 +566,37 @@ serve(async (req) => {
         })
         break
 
+      case 'streaming.started':
+        console.log('[webhook] Streaming started successfully for call:', callId)
+        await logCallEvent(serviceClient, callId, 'streaming', 'Audio streaming connected', {})
+        break
+
+      case 'streaming.failed': {
+        // Streaming to audio bridge failed - fall back to legacy voice-agent mode
+        console.error('[webhook] Streaming FAILED for call:', callId, 'Falling back to legacy mode')
+        console.error('[webhook] Streaming failure details:', JSON.stringify(event.payload))
+
+        await logCallEvent(serviceClient, callId, 'error', 'Audio bridge connection failed, using backup voice mode', {
+          failure_reason: event.payload?.failure_reason || 'unknown'
+        })
+
+        // Start Telnyx transcription as fallback
+        if (telnyxApiKey) {
+          await startTranscription(event.payload.call_control_id, telnyxApiKey, callId, serviceClient)
+
+          // Trigger voice agent opening greeting
+          const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+          const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+          console.log('[webhook] Triggering legacy voice agent as fallback')
+          await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, true)
+        }
+        break
+      }
+
+      case 'streaming.stopped':
+        console.log('[webhook] Streaming stopped for call:', callId)
+        break
+
       default:
         console.log('Unhandled event type:', eventType)
     }
