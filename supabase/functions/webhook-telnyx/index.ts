@@ -240,7 +240,9 @@ serve(async (req) => {
           // Using OpenAI Realtime API - stream audio to bridge
           // Bridge handles: audio conversion, OpenAI communication, transcript capture
           try {
-            const streamUrl = `${audioBridgeUrl}/telnyx-stream?call_id=${callId}`
+            // Convert https:// to wss:// for WebSocket streaming
+            const wssBridgeUrl = audioBridgeUrl.replace(/^https?:\/\//, 'wss://')
+            const streamUrl = `${wssBridgeUrl}/telnyx-stream?call_id=${callId}`
 
             // Notify bridge to prepare session
             await fetch(`${audioBridgeUrl}/start-session`, {
@@ -250,8 +252,8 @@ serve(async (req) => {
             })
 
             // Start Telnyx media streaming to bridge
-            // Using 'rtp' mode for raw audio that we can convert
-            await fetch(
+            // Using JSON WebSocket format (not RTP) for bidirectional audio
+            const streamResponse = await fetch(
               `https://api.telnyx.com/v2/calls/${event.payload.call_control_id}/actions/streaming_start`,
               {
                 method: 'POST',
@@ -262,12 +264,14 @@ serve(async (req) => {
                 body: JSON.stringify({
                   stream_url: streamUrl,
                   stream_track: 'both_tracks',
-                  stream_bidirectional_mode: 'rtp', // Use RTP for mulaw audio that we can process
                 }),
               }
             )
+
+            const streamResult = await streamResponse.text()
+            console.log(`[webhook] Telnyx streaming_start response:`, streamResult)
             console.log(`[webhook] Started Realtime API streaming for call ${callId} to ${streamUrl}`)
-            await logCallEvent(serviceClient, callId, 'realtime_api', 'Voice AI connected via Realtime API', { bridge_url: audioBridgeUrl })
+            await logCallEvent(serviceClient, callId, 'realtime_api', 'Voice AI connected via Realtime API', { bridge_url: audioBridgeUrl, stream_url: streamUrl })
 
             // DON'T start Telnyx transcription - OpenAI Realtime handles it
             // DON'T trigger voice-agent - OpenAI Realtime handles responses

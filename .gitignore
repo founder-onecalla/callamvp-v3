@@ -35,3 +35,5 @@ supabase/.temp
 vite.config.d.ts
 vite.config.js
 tmpclaude-*
+.vercel
+.env*.local

@@ -86,25 +86,34 @@ User's Goal: ${JSON.stringify(context.gathered_info || {})}
 
     const systemPrompt = `You are generating a post-call summary for OneCalla, a phone calling assistant.
 
+## CRITICAL: ONLY STATE FACTS FROM THE DATA PROVIDED
+- ONLY report what is explicitly in the transcript or call events
+- If there is no transcript, you can ONLY state basic facts: connected/didn't connect, duration, outcome
+- NEVER invent names, conversations, or outcomes that aren't in the data
+- If you don't know what was discussed, say "Call connected but no transcript was captured" or similar
+- NEVER claim a voicemail was left unless the transcript shows it
+
 Your summary should:
 - Be conversational and natural, like a friend telling them what happened
 - Be concise (2-4 sentences typically, maybe more if a lot happened)
 - Focus on what matters: did it connect? what was discussed? was the goal achieved?
-- Include specific details mentioned (names, times, amounts, next steps)
+- Include specific details mentioned (names, times, amounts, next steps) ONLY if they appear in the transcript
 - Adapt tone to the call type (casual for personal, more detailed for business)
 
 DO NOT:
 - Use bullet points or formal formatting
 - Start with "Here's your summary" or similar
-- Be vague or generic
-- Write an essay
+- EVER make up details that aren't in the provided data
+- Claim things happened if there's no transcript evidence
 
-Examples of good summaries:
+Examples of good summaries WITH transcript:
 - "Got through to Xfinity. Spoke with Marcus who confirmed your internet will be back by tomorrow morning. He credited $15 to your account for the outage."
-- "Called but it went to voicemail. Didn't leave a message."
 - "Booked! Table for 4 at 7pm Saturday. They said to text if you're running late."
-- "Reached the doctor's office. Appointment set for Tuesday at 2:30pm. Bring your insurance card and arrive 15 minutes early."
-- "Couldn't get through - busy signal the whole time. Might want to try again later."`
+
+Examples of good summaries WITHOUT transcript:
+- "Call connected for 45 seconds but the transcript wasn't captured. You may want to try again."
+- "Called but couldn't connect - the line was busy."
+- "Call ended after 2 seconds. There may have been a technical issue."`
 
     const userPrompt = `Generate a post-call summary based on this information:
 
@@ -112,6 +121,7 @@ CALL STATUS:
 - Phone number: ${call.phone_number}
 - Answered: ${wasAnswered ? 'Yes' : 'No'}
 - Duration: ${duration > 0 ? `${Math.floor(duration / 60)}:${(duration % 60).toString().padStart(2, '0')}` : 'Did not connect'}
+- Outcome: ${call.outcome || 'unknown'}
 
 CONTEXT:
 ${contextInfo}
@@ -119,8 +129,10 @@ ${contextInfo}
 CALL EVENTS:
 ${eventsText || 'No events recorded'}
 
-TRANSCRIPT:
+TRANSCRIPT (${hasTranscriptions ? transcriptions.length + ' messages' : 'NONE - no transcript captured'}):
 ${transcriptText}
+
+IMPORTANT: ${hasTranscriptions ? 'Use the transcript above to describe what happened.' : 'There is NO transcript. Only state basic facts about whether the call connected and how long it lasted. Do NOT invent any conversation details.'}
 
 Write a natural, conversational summary of what happened on this call.`
 
