@@ -24,26 +24,26 @@ export default function ChatContainer() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const isFirstMessage = useRef(true)
-  const justCreatedConversation = useRef(false) // Track if we just created this conversation
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, currentCall])
 
-  // Load conversation when selected from sidebar (not when just created)
-  useEffect(() => {
-    if (currentConversationId) {
-      // Only load from DB if we selected an existing conversation, not if we just created one
-      if (!justCreatedConversation.current) {
-        loadConversation(currentConversationId)
-      }
-      justCreatedConversation.current = false
+  // Handle selecting a conversation from sidebar
+  const handleSelectConversation = async (id: string | null) => {
+    if (id) {
+      // Loading an existing conversation - fetch messages from DB
+      selectConversation(id)
+      await loadConversation(id)
       isFirstMessage.current = false
     } else {
+      // Starting fresh (null = no conversation)
+      selectConversation(null)
       clearMessages()
       isFirstMessage.current = true
     }
-  }, [currentConversationId, loadConversation, clearMessages])
+    setSidebarOpen(false)
+  }
 
   const handleNewChat = async () => {
     selectConversation(null)
@@ -62,8 +62,9 @@ export default function ChatContainer() {
     // Create conversation on first message if none selected
     let convId = currentConversationId
     if (!convId) {
-      justCreatedConversation.current = true // Don't reload from DB after creating
       convId = await createConversation()
+      // Note: createConversation sets currentConversationId internally
+      // We don't load from DB here - we already have the message locally
     }
 
     await sendMessage(message, convId)
@@ -83,10 +84,7 @@ export default function ChatContainer() {
         currentConversationId={currentConversationId}
         isLoading={conversationsLoading}
         onNewChat={handleNewChat}
-        onSelectConversation={(id) => {
-          selectConversation(id)
-          setSidebarOpen(false)
-        }}
+        onSelectConversation={handleSelectConversation}
         onDeleteConversation={deleteConversation}
         onRenameConversation={renameConversation}
         isOpen={sidebarOpen}
