@@ -24,15 +24,20 @@ export default function ChatContainer() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const isFirstMessage = useRef(true)
+  const justCreatedConversation = useRef(false) // Track if we just created this conversation
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, currentCall])
 
-  // Load conversation when selected
+  // Load conversation when selected from sidebar (not when just created)
   useEffect(() => {
     if (currentConversationId) {
-      loadConversation(currentConversationId)
+      // Only load from DB if we selected an existing conversation, not if we just created one
+      if (!justCreatedConversation.current) {
+        loadConversation(currentConversationId)
+      }
+      justCreatedConversation.current = false
       isFirstMessage.current = false
     } else {
       clearMessages()
@@ -57,6 +62,7 @@ export default function ChatContainer() {
     // Create conversation on first message if none selected
     let convId = currentConversationId
     if (!convId) {
+      justCreatedConversation.current = true // Don't reload from DB after creating
       convId = await createConversation()
     }
 
