@@ -437,6 +437,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
       // #region agent log - Hypothesis A,D: Check Supabase config
       const envUrl = import.meta.env.VITE_SUPABASE_URL
       const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+      console.log('[DEBUG-A] Supabase URL:', envUrl)
+      console.log('[DEBUG-A] Anon key first 20:', envKey?.substring(0,20))
+      console.log('[DEBUG-A] Anon key last 10:', envKey?.substring(envKey.length-10))
       fetch('http://127.0.0.1:7242/ingest/1c58ddf9-a044-4791-b751-6563effc4c78',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useCall.tsx:env-check',message:'Supabase env vars',data:{supabaseUrl:envUrl,anonKeyFirst20:envKey?.substring(0,20),anonKeyLast10:envKey?.substring(envKey.length-10)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,D'})}).catch(()=>{});
       // #endregion
       
@@ -448,6 +451,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
         tokenHeader = JSON.parse(atob(tokenParts[0] || ''))
         tokenPayload = JSON.parse(atob(tokenParts[1] || ''))
       } catch(e) { /* ignore */ }
+      console.log('[DEBUG-B] Token header:', tokenHeader)
+      console.log('[DEBUG-B] Token issuer (iss):', tokenPayload?.iss)
+      console.log('[DEBUG-B] Token audience (aud):', tokenPayload?.aud)
+      console.log('[DEBUG-B] Token role:', tokenPayload?.role)
       fetch('http://127.0.0.1:7242/ingest/1c58ddf9-a044-4791-b751-6563effc4c78',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useCall.tsx:token-check',message:'JWT token details',data:{tokenHeader,tokenIss:tokenPayload?.iss,tokenAud:tokenPayload?.aud,tokenSub:tokenPayload?.sub,tokenRole:tokenPayload?.role},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B,C'})}).catch(()=>{});
       // #endregion
       

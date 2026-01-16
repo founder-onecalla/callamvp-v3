@@ -226,6 +226,53 @@ export const ROLE_COLORS = {
   },
 }
 
+// ============================================================================
+// USER SETTINGS
+// ============================================================================
+
+export type CallerMode = 'SELF_NAME' | 'OTHER_NAME' | 'DONT_DISCLOSE'
+export type ThemeMode = 'SYSTEM' | 'LIGHT' | 'DARK'
+export type TextSizeMode = 'NORMAL' | 'LARGE'
+
+export interface UserSettings {
+  user_id: string
+
+  // Profile
+  display_name: string | null
+
+  // Calling and identity
+  default_caller_mode: CallerMode
+  default_caller_other_name: string | null
+  require_sensitive_confirmation: boolean
+
+  // Privacy and data retention
+  transcript_retention_days: number  // 7, 30, or 0 (forever)
+
+  // Notifications
+  notify_call_completed: boolean
+  notify_call_failed: boolean
+
+  // Appearance
+  theme: ThemeMode
+  text_size: TextSizeMode
+
+  // Timestamps
+  created_at: string
+  updated_at: string
+}
+
+export const DEFAULT_SETTINGS: Omit<UserSettings, 'user_id' | 'created_at' | 'updated_at'> = {
+  display_name: null,
+  default_caller_mode: 'SELF_NAME',
+  default_caller_other_name: null,
+  require_sensitive_confirmation: true,
+  transcript_retention_days: 30,
+  notify_call_completed: false,
+  notify_call_failed: true,
+  theme: 'SYSTEM',
+  text_size: 'NORMAL',
+}
+
 export interface Database {
   public: {
     Tables: {
