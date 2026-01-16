@@ -82,6 +82,83 @@ function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+// Farewell phrases - high confidence (auto-hangup when in closing_said state)
+const FAREWELL_PHRASES = [
+  'bye', 'goodbye', 'good bye', 'talk to you later', 'have a good day',
+  'have a good one', 'thanks bye', 'thank you bye', 'ok bye', 'okay bye',
+  'alright bye', 'take care', 'see you', 'later', 'that\'s all',
+  'appreciate it bye', 'thanks so much bye', 'you too bye'
+]
+
+// Continuation markers - abort closing if detected
+const CONTINUATION_MARKERS = [
+  'wait', 'actually', 'one more thing', 'hold on', 'before you go',
+  'can you also', 'i also need', 'i have another', 'quick question',
+  'also', 'oh wait', 'sorry', 'one second'
+]
+
+// Check if text contains a farewell
+function isFarewell(text: string): boolean {
+  const lower = text.toLowerCase().trim()
+  // Check for farewell phrases
+  for (const phrase of FAREWELL_PHRASES) {
+    if (lower.includes(phrase)) {
+      return true
+    }
+  }
+  return false
+}
+
+// Check if text contains continuation markers
+function isContinuation(text: string): boolean {
+  const lower = text.toLowerCase().trim()
+  // Check for continuation markers
+  for (const marker of CONTINUATION_MARKERS) {
+    if (lower.includes(marker)) {
+      return true
+    }
+  }
+  // Also check for question marks (likely asking something new)
+  if (lower.includes('?')) {
+    return true
+  }
+  return false
+}
+
+// Helper to hang up the call
+async function hangupCall(
+  callControlId: string,
+  telnyxApiKey: string,
+  serviceClient: ReturnType<typeof createClient>,
+  callId: string,
+  reason: string
+) {
+  console.log(`[webhook] Hanging up call ${callId}, reason: ${reason}`)
+
+  try {
+    const response = await fetch(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${telnyxApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      }
+    )
+
+    if (response.ok) {
+      console.log(`[webhook] Hangup successful: ${reason}`)
+      await logCallEvent(serviceClient, callId, 'hangup', `Call ended: ${reason}`, { reason })
+    } else {
+      console.error(`[webhook] Hangup failed:`, await response.text())
+    }
+  } catch (error) {
+    console.error(`[webhook] Hangup error:`, error)
+  }
+}
+
 // Helper to trigger voice agent
 async function triggerVoiceAgent(
   supabaseUrl: string,
@@ -501,16 +578,76 @@ serve(async (req) => {
             })
           }
 
-          // If REMOTE party spoke (not our AI) and it's a final transcription, trigger voice agent
+          // If REMOTE party spoke (not our AI) and it's a final transcription
           const isFinal = transcription.is_final === true || transcription.is_final === undefined
 
           if (!isOurAI && isFinal) {
-            console.log('[webhook] Remote party spoke, triggering voice agent response')
-            console.log('[webhook] Their words:', transcription.transcript)
+            const transcriptText = transcription.transcript
 
-            const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
-            const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-            await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, transcription.transcript, false)
+            // Get the current call state to check if we're in closing mode
+            const { data: callData } = await serviceClient
+              .from('calls')
+              .select('closing_state, closing_started_at, telnyx_call_id')
+              .eq('id', callId)
+              .single()
+
+            const isClosing = callData?.closing_state === 'closing_said'
+            const closingStartedAt = callData?.closing_started_at ? new Date(callData.closing_started_at) : null
+
+            console.log('[webhook] Call state:', {
+              isClosing,
+              closingStartedAt: closingStartedAt?.toISOString(),
+              transcriptText
+            })
+
+            if (isClosing && telnyxApiKey && callData?.telnyx_call_id) {
+              // We're in closing mode - check for farewell or continuation
+
+              if (isContinuation(transcriptText)) {
+                // User wants to continue - abort closing, return to active
+                console.log('[webhook] Continuation detected, aborting closing')
+                await serviceClient
+                  .from('calls')
+                  .update({ closing_state: 'active', closing_started_at: null })
+                  .eq('id', callId)
+
+                await logCallEvent(serviceClient, callId, 'closing_aborted', 'User has more to say, continuing call', {})
+
+                // Trigger voice agent to respond
+                const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+                const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+                await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, transcriptText, false)
+
+              } else if (isFarewell(transcriptText)) {
+                // User said goodbye - hang up after short grace period
+                console.log('[webhook] Farewell detected, hanging up after grace period')
+                await logCallEvent(serviceClient, callId, 'mutual_goodbye', 'Mutual goodbye detected', {
+                  user_farewell: transcriptText
+                })
+
+                // Wait 1 second grace period to let their last word finish
+                await delay(1000)
+                await hangupCall(callData.telnyx_call_id, telnyxApiKey, serviceClient, callId, 'MUTUAL_GOODBYE')
+
+              } else {
+                // Not a clear farewell or continuation - respond but stay in closing
+                console.log('[webhook] Ambiguous response in closing mode, responding but staying in closing')
+
+                const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+                const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+                await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, transcriptText, false)
+              }
+
+            } else {
+              // Normal conversation mode - trigger voice agent
+              console.log('[webhook] Remote party spoke, triggering voice agent response')
+              console.log('[webhook] Their words:', transcriptText)
+
+              const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+              const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+              await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, transcriptText, false)
+            }
+
           } else if (isOurAI) {
             console.log('[webhook] AI agent spoke, not triggering response (avoiding loop)')
           }
@@ -605,8 +742,75 @@ serve(async (req) => {
         console.log('[webhook] Streaming stopped for call:', callId)
         break
 
+      case 'call.speak.ended': {
+        // TTS finished speaking - good time to check for timeout if in closing state
+        console.log('[webhook] Speak ended for call:', callId)
+
+        // Get call state
+        const { data: speakEndCallData } = await serviceClient
+          .from('calls')
+          .select('closing_state, closing_started_at, telnyx_call_id')
+          .eq('id', callId)
+          .single()
+
+        if (speakEndCallData?.closing_state === 'closing_said' && speakEndCallData?.closing_started_at) {
+          const closingStarted = new Date(speakEndCallData.closing_started_at)
+          const now = new Date()
+          const secondsSinceClosing = (now.getTime() - closingStarted.getTime()) / 1000
+
+          console.log('[webhook] In closing state, seconds since closing:', secondsSinceClosing)
+
+          // If we've been in closing state for more than 10 seconds, start silence timer
+          // (The actual hangup will happen on timeout, not here - this is just logging)
+          if (secondsSinceClosing > 10 && telnyxApiKey && speakEndCallData.telnyx_call_id) {
+            console.log('[webhook] Silence timeout reached (10s), hanging up')
+            await hangupCall(
+              speakEndCallData.telnyx_call_id,
+              telnyxApiKey,
+              serviceClient,
+              callId,
+              'SILENCE_TIMEOUT_AFTER_CLOSING'
+            )
+          }
+        }
+        break
+      }
+
       default:
         console.log('Unhandled event type:', eventType)
+    }
+
+    // After handling the event, check for closing timeout on any event
+    // This ensures we catch silence timeouts even if no specific event triggers it
+    if (callId && telnyxApiKey) {
+      const { data: timeoutCheckCall } = await serviceClient
+        .from('calls')
+        .select('closing_state, closing_started_at, telnyx_call_id, status')
+        .eq('id', callId)
+        .single()
+
+      if (
+        timeoutCheckCall?.status === 'answered' &&
+        timeoutCheckCall?.closing_state === 'closing_said' &&
+        timeoutCheckCall?.closing_started_at &&
+        timeoutCheckCall?.telnyx_call_id
+      ) {
+        const closingStarted = new Date(timeoutCheckCall.closing_started_at)
+        const now = new Date()
+        const secondsSinceClosing = (now.getTime() - closingStarted.getTime()) / 1000
+
+        // 10 second silence timeout
+        if (secondsSinceClosing > 10) {
+          console.log('[webhook] Closing timeout check: hanging up after', secondsSinceClosing, 'seconds')
+          await hangupCall(
+            timeoutCheckCall.telnyx_call_id,
+            telnyxApiKey,
+            serviceClient,
+            callId,
+            'SILENCE_TIMEOUT_AFTER_CLOSING'
+          )
+        }
+      }
     }
 
     return new Response(JSON.stringify({ received: true }), {

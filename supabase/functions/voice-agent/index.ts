@@ -271,29 +271,17 @@ serve(async (req) => {
       } else {
         console.log('[voice-agent] Speech successfully sent to Telnyx')
 
-        // If AI decided to end call, hang up after a short delay for speech to finish
+        // If AI decided to end call, set closing state (don't hang up yet - wait for mutual goodbye)
         if (shouldEndCall) {
-          console.log('[voice-agent] Ending call after goodbye...')
-          // Wait 3 seconds for the goodbye to be spoken
-          await new Promise(resolve => setTimeout(resolve, 3000))
-
-          const hangupResponse = await fetch(
-            `https://api.telnyx.com/v2/calls/${call.telnyx_call_id}/actions/hangup`,
-            {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${telnyxApiKey}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({}),
-            }
-          )
-
-          if (hangupResponse.ok) {
-            console.log('[voice-agent] Call ended successfully')
-          } else {
-            console.error('[voice-agent] Failed to hang up:', await hangupResponse.text())
-          }
+          console.log('[voice-agent] AI said goodbye, entering closing_said state...')
+          await serviceClient
+            .from('calls')
+            .update({
+              closing_state: 'closing_said',
+              closing_started_at: new Date().toISOString()
+            })
+            .eq('id', call_id)
+          console.log('[voice-agent] Call state updated to closing_said, waiting for mutual goodbye')
         }
       }
     } else {

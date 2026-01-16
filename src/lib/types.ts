@@ -17,6 +17,8 @@ export interface Call {
   amd_result?: string | null // 'human', 'machine', 'not_sure', etc.
   summary?: string | null // AI-generated summary of the call
   duration_seconds?: number | null
+  closing_state?: 'active' | 'closing_said' // For mutual goodbye mechanism
+  closing_started_at?: string | null // When AI said goodbye
 }
 
 export interface Transcription {
