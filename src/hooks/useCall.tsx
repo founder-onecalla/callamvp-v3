@@ -3,9 +3,12 @@ import { supabase } from '../lib/supabase'
 import type { Call, Transcription, CallEvent, CallCardData } from '../lib/types'
 import { useAuth } from '../lib/AuthContext'
 
+// Summary generation state
+export type SummaryState = 'idle' | 'loading' | 'succeeded' | 'failed'
+
 interface CallContextType {
   currentCall: Call | null
-  callConversationId: string | null  // Which conversation this call belongs to
+  callConversationId: string | null
   transcriptions: Transcription[]
   callEvents: CallEvent[]
   isLoading: boolean
@@ -13,8 +16,13 @@ interface CallContextType {
   startCall: (phoneNumber: string, contextId?: string, purpose?: string, conversationId?: string | null) => Promise<void>
   hangUp: () => Promise<void>
   sendDtmf: (digits: string) => Promise<void>
-  callCardData: CallCardData | null  // Structured call card data after call ends
-  lastSummary: string | null  // Kept for backward compatibility
+  callCardData: CallCardData | null
+  lastSummary: string | null
+  // Summary state tracking
+  summaryState: SummaryState
+  summaryRequestedAt: number | null
+  summaryError: string | null
+  retrySummary: () => Promise<void>
 }
 
 const CallContext = createContext<CallContextType | null>(null)
@@ -30,8 +38,52 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [callCardData, setCallCardData] = useState<CallCardData | null>(null)
   const [lastSummary, setLastSummary] = useState<string | null>(null)
 
+  // Summary state tracking
+  const [summaryState, setSummaryState] = useState<SummaryState>('idle')
+  const [summaryRequestedAt, setSummaryRequestedAt] = useState<number | null>(null)
+  const [summaryError, setSummaryError] = useState<string | null>(null)
+
   // Track if we've already requested a summary for this call
   const summaryRequestedRef = useRef<string | null>(null)
+
+  // Request summary function (can be called for retry)
+  const requestSummary = useCallback(async (callId: string) => {
+    setSummaryState('loading')
+    setSummaryRequestedAt(Date.now())
+    setSummaryError(null)
+
+    try {
+      const response = await supabase.functions.invoke('call-summary', {
+        body: { call_id: callId },
+      })
+
+      if (response.error) {
+        throw new Error(response.error.message || 'Failed to generate summary')
+      }
+
+      if (response.data?.callCardData) {
+        setCallCardData(response.data.callCardData)
+        setSummaryState('succeeded')
+      } else {
+        throw new Error('No summary data returned')
+      }
+
+      if (response.data?.summary) {
+        setLastSummary(response.data.summary)
+      }
+    } catch (err) {
+      console.error('Failed to get call summary:', err)
+      setSummaryState('failed')
+      setSummaryError(err instanceof Error ? err.message : 'Failed to generate summary')
+    }
+  }, [])
+
+  // Retry summary function
+  const retrySummary = useCallback(async () => {
+    if (!currentCall) return
+    summaryRequestedRef.current = currentCall.id
+    await requestSummary(currentCall.id)
+  }, [currentCall, requestSummary])
 
   // Subscribe to call updates
   useEffect(() => {
@@ -54,24 +106,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
           // When call ends, request summary
           if (updatedCall.status === 'ended' && summaryRequestedRef.current !== updatedCall.id) {
             summaryRequestedRef.current = updatedCall.id
-
-            try {
-              const response = await supabase.functions.invoke('call-summary', {
-                body: { call_id: updatedCall.id },
-              })
-
-              if (response.data?.callCardData) {
-                setCallCardData(response.data.callCardData)
-              }
-              if (response.data?.summary) {
-                setLastSummary(response.data.summary)
-              }
-            } catch (err) {
-              console.error('Failed to get call summary:', err)
-            }
-
-            // Don't auto-clear - let user review the call card with transcript
-            // User can dismiss it manually via the dismiss button or by starting a new chat
+            await requestSummary(updatedCall.id)
           }
         }
       )
@@ -80,16 +115,14 @@ export function CallProvider({ children }: { children: ReactNode }) {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [currentCall?.id])
+  }, [currentCall?.id, requestSummary])
 
   // Subscribe to transcriptions via bridge WebSocket (if available) for lower latency
-  // Falls back to Supabase Realtime for reliability
   useEffect(() => {
     if (!currentCall) return
 
     const bridgeUrl = import.meta.env.VITE_AUDIO_BRIDGE_URL
 
-    // If bridge URL is configured, connect for real-time transcripts
     let ws: WebSocket | null = null
     if (bridgeUrl) {
       try {
@@ -100,7 +133,6 @@ export function CallProvider({ children }: { children: ReactNode }) {
           try {
             const data = JSON.parse(event.data)
             if (data.event === 'transcript') {
-              // Add transcript with a generated ID since it comes from WebSocket
               const transcript: Transcription = {
                 id: crypto.randomUUID(),
                 call_id: currentCall.id,
@@ -122,16 +154,12 @@ export function CallProvider({ children }: { children: ReactNode }) {
           console.error('[useCall] Bridge WebSocket error:', err)
         }
 
-        ws.onclose = () => {
-          // WebSocket closed
-        }
+        ws.onclose = () => {}
       } catch (err) {
         console.error('[useCall] Failed to connect to bridge:', err)
       }
     }
 
-    // Always subscribe to Supabase Realtime as backup
-    // (bridge also stores transcripts in DB, so duplicates are filtered by ID)
     const channel = supabase
       .channel(`transcriptions-${currentCall.id}`)
       .on(
@@ -144,7 +172,6 @@ export function CallProvider({ children }: { children: ReactNode }) {
         },
         (payload) => {
           const newTranscript = payload.new as Transcription
-          // Avoid duplicates - check if we already have this transcript
           setTranscriptions((prev) => {
             if (prev.some(t => t.id === newTranscript.id)) {
               return prev
@@ -200,8 +227,12 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setCallEvents([])
     setCallCardData(null)
     setLastSummary(null)
-    setCallConversationId(conversationId ?? null)  // Track which conversation owns this call
+    setCallConversationId(conversationId ?? null)
     summaryRequestedRef.current = null
+    // Reset summary state
+    setSummaryState('idle')
+    setSummaryRequestedAt(null)
+    setSummaryError(null)
 
     try {
       const response = await supabase.functions.invoke('call-start', {
@@ -278,6 +309,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
         sendDtmf,
         callCardData,
         lastSummary,
+        summaryState,
+        summaryRequestedAt,
+        summaryError,
+        retrySummary,
       }}
     >
       {children}

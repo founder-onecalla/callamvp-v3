@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useCall } from '../../hooks/useCall'
 import { useAudioStream } from '../../hooks/useAudioStream'
-import CallCardCollapsed from './CallCardCollapsed'
 import CallCardExpanded from './CallCardExpanded'
 import CallTranscriptView from './CallTranscriptView'
+import CallRecapCard from './CallRecapCard'
+import type { CallCardStatus } from '../../lib/types'
 
 const dtmfButtons = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#']
 const AUDIO_RELAY_URL = import.meta.env.VITE_AUDIO_RELAY_URL || ''
@@ -25,8 +26,36 @@ const statusConfig: Record<string, { label: string; speaking: string }> = {
   ended: { label: 'Ended', speaking: 'spoke with' },
 }
 
+// Map call outcome to CallCardStatus
+function mapOutcomeToStatus(outcome: string | null, wasAnswered: boolean): CallCardStatus {
+  if (!outcome) {
+    return wasAnswered ? 'completed' : 'failed'
+  }
+  switch (outcome) {
+    case 'completed': return 'completed'
+    case 'voicemail': return 'voicemail'
+    case 'busy': return 'busy'
+    case 'no_answer': return 'no_answer'
+    case 'declined': return 'failed'
+    case 'cancelled': return 'canceled'
+    default: return wasAnswered ? 'completed' : 'failed'
+  }
+}
+
 export default function CallCard() {
-  const { currentCall, transcriptions, callEvents, hangUp, sendDtmf, callCardData } = useCall()
+  const {
+    currentCall,
+    transcriptions,
+    callEvents,
+    hangUp,
+    sendDtmf,
+    callCardData,
+    summaryState,
+    summaryRequestedAt,
+    summaryError,
+    retrySummary,
+  } = useCall()
+
   const [isExpanded, setIsExpanded] = useState(false)
   const [showKeypad, setShowKeypad] = useState(false)
   const [duration, setDuration] = useState(0)
@@ -60,18 +89,6 @@ export default function CallCard() {
   const seconds = duration % 60
   const timeDisplay = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
 
-  // If call ended and we have structured data, show the new card design
-  if (currentCall.status === 'ended' && callCardData) {
-    return isExpanded ? (
-      <CallCardExpanded data={callCardData} onCollapse={() => setIsExpanded(false)} />
-    ) : (
-      <CallCardCollapsed data={callCardData} onExpand={() => setIsExpanded(true)} />
-    )
-  }
-
-  // Active call view (pending, ringing, answered, or ended waiting for data)
-  const status = statusConfig[currentCall.status] || statusConfig.ended
-
   // Build transcript turns from ASR (them) and agent_speech events (our agent)
   const asrTurns = transcriptions.map(t => ({
     speaker: 'them' as const,
@@ -92,7 +109,44 @@ export default function CallCard() {
     .filter(t => t.text && t.text.trim().length > 0)
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 
-  // Extract contact name (use phone number as fallback)
+  // If call ended and user wants expanded view with full callCardData
+  if (currentCall.status === 'ended' && callCardData && isExpanded) {
+    return <CallCardExpanded data={callCardData} onCollapse={() => setIsExpanded(false)} />
+  }
+
+  // If call ended - show recap card with progressive loading
+  if (currentCall.status === 'ended') {
+    // Calculate duration from call data
+    let callDuration: number | null = null
+    if (currentCall.started_at && currentCall.ended_at) {
+      callDuration = Math.round(
+        (new Date(currentCall.ended_at).getTime() - new Date(currentCall.started_at).getTime()) / 1000
+      )
+    }
+
+    // Determine outcome status
+    const wasAnswered = currentCall.started_at !== null
+    const outcomeStatus = mapOutcomeToStatus(currentCall.outcome ?? null, wasAnswered)
+
+    return (
+      <CallRecapCard
+        phoneNumber={currentCall.phone_number}
+        outcome={outcomeStatus}
+        duration={callDuration}
+        endedAt={currentCall.ended_at}
+        transcriptTurns={transcriptTurns}
+        callCardData={callCardData}
+        summaryState={summaryState}
+        summaryRequestedAt={summaryRequestedAt}
+        summaryError={summaryError}
+        onRetry={retrySummary}
+        onExpand={() => setIsExpanded(true)}
+      />
+    )
+  }
+
+  // Active call view (pending, ringing, answered)
+  const status = statusConfig[currentCall.status] || statusConfig.ended
   const contactName = currentCall.phone_number
 
   return (
@@ -127,18 +181,14 @@ export default function CallCard() {
           {/* Pulsing status indicator */}
           <div className="relative">
             <span className={`w-2 h-2 rounded-full block ${
-              currentCall.status === 'answered' ? 'bg-teal-500' :
-              currentCall.status === 'ended' ? 'bg-gray-400' : 'bg-orange-500'
+              currentCall.status === 'answered' ? 'bg-teal-500' : 'bg-orange-500'
             }`} />
-            {currentCall.status !== 'ended' && (
-              <span className={`absolute inset-0 w-2 h-2 rounded-full animate-ping ${
-                currentCall.status === 'answered' ? 'bg-teal-500' : 'bg-orange-500'
-              }`} />
-            )}
+            <span className={`absolute inset-0 w-2 h-2 rounded-full animate-ping ${
+              currentCall.status === 'answered' ? 'bg-teal-500' : 'bg-orange-500'
+            }`} />
           </div>
           <span className={`text-sm font-medium ${
-            currentCall.status === 'answered' ? 'text-teal-600' :
-            currentCall.status === 'ended' ? 'text-gray-500' : 'text-orange-600'
+            currentCall.status === 'answered' ? 'text-teal-600' : 'text-orange-600'
           }`}>
             {currentCall.status === 'answered' ? (isListening ? 'Listening' : 'Speaking') : status.label}
           </span>
@@ -180,82 +230,56 @@ export default function CallCard() {
       )}
 
       {/* Controls */}
-      {currentCall.status !== 'ended' && (
-        <div className="px-4 py-3 bg-slate-50 space-y-2">
-          <div className="flex gap-2">
+      <div className="px-4 py-3 bg-slate-50 space-y-2">
+        <div className="flex gap-2">
+          <button
+            onClick={hangUp}
+            className="flex-1 min-h-[44px] bg-red-500 hover:bg-red-600 text-white rounded-full text-sm font-medium transition-all duration-200"
+          >
+            End Call
+          </button>
+          {currentCall.status === 'answered' && (
             <button
-              onClick={hangUp}
-              className="flex-1 min-h-[44px] bg-red-500 hover:bg-red-600 text-white rounded-full text-sm font-medium transition-all duration-200"
+              onClick={() => setShowKeypad(!showKeypad)}
+              className={`px-4 min-h-[44px] rounded-full text-sm font-medium transition-all duration-200 ${
+                showKeypad
+                  ? 'bg-teal-500 text-white'
+                  : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
+              }`}
             >
-              End Call
+              Keypad
             </button>
-            {currentCall.status === 'answered' && (
-              <button
-                onClick={() => setShowKeypad(!showKeypad)}
-                className={`px-4 min-h-[44px] rounded-full text-sm font-medium transition-all duration-200 ${
-                  showKeypad
-                    ? 'bg-teal-500 text-white'
-                    : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
-                }`}
-              >
-                Keypad
-              </button>
-            )}
-            {AUDIO_RELAY_URL && currentCall.status === 'answered' && (
-              <button
-                onClick={isListening ? stopListening : startListening}
-                className={`w-11 h-11 rounded-full text-sm font-medium transition-all duration-200 flex items-center justify-center ${
-                  isListening
-                    ? 'bg-teal-500 text-white'
-                    : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
-                }`}
-                title={isListening ? 'Stop listening' : 'Listen in'}
-              >
-                {isListening ? '🔊' : '🎧'}
-              </button>
-            )}
-          </div>
-
-          {/* Keypad */}
-          {showKeypad && currentCall.status === 'answered' && (
-            <div className="grid grid-cols-3 gap-2 pt-2">
-              {dtmfButtons.map((digit) => (
-                <button
-                  key={digit}
-                  onClick={() => sendDtmf(digit)}
-                  className="min-h-[44px] bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-lg font-medium transition-all duration-150"
-                >
-                  {digit}
-                </button>
-              ))}
-            </div>
+          )}
+          {AUDIO_RELAY_URL && currentCall.status === 'answered' && (
+            <button
+              onClick={isListening ? stopListening : startListening}
+              className={`w-11 h-11 rounded-full text-sm font-medium transition-all duration-200 flex items-center justify-center ${
+                isListening
+                  ? 'bg-teal-500 text-white'
+                  : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
+              }`}
+              title={isListening ? 'Stop listening' : 'Listen in'}
+            >
+              {isListening ? '🔊' : '🎧'}
+            </button>
           )}
         </div>
-      )}
 
-      {/* Ended state fallback (when callCardData not yet loaded) */}
-      {currentCall.status === 'ended' && !callCardData && (
-        <>
-          {/* Show transcript we captured during the call */}
-          {transcriptTurns.length > 0 && (
-            <div className="px-4 py-3 bg-white border-b border-slate-200">
-              <CallTranscriptView
-                turns={transcriptTurns}
-                otherPartyName={contactName}
-                maxHeight="180px"
-                isLive={false}
-              />
-            </div>
-          )}
-          {/* Loading indicator for AI summary */}
-          <div className="px-4 py-3 bg-slate-50">
-            <div className="flex items-center gap-2 text-slate-500">
-              <div className="w-4 h-4 border-2 border-slate-300 border-t-teal-500 rounded-full animate-spin" />
-              <span className="text-sm">Generating summary...</span>
-            </div>
+        {/* Keypad */}
+        {showKeypad && currentCall.status === 'answered' && (
+          <div className="grid grid-cols-3 gap-2 pt-2">
+            {dtmfButtons.map((digit) => (
+              <button
+                key={digit}
+                onClick={() => sendDtmf(digit)}
+                className="min-h-[44px] bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-lg font-medium transition-all duration-150"
+              >
+                {digit}
+              </button>
+            ))}
           </div>
-        </>
-      )}
+        )}
+      </div>
     </div>
   )
 }
