@@ -432,55 +432,50 @@ export function CallProvider({ children }: { children: ReactNode }) {
       console.log('[useCall] Phone number:', phoneNumber)
       console.log('[useCall] Purpose:', purpose)
       
-      // Wrap in timeout to catch hanging requests
-      const invokePromise = supabase.functions.invoke('call-start', {
-        body: {
+      // Use direct fetch for better error handling
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+      const fetchUrl = `${supabaseUrl}/functions/v1/call-start`
+      
+      console.log('[useCall] Fetch URL:', fetchUrl)
+      
+      const fetchResponse = await fetch(fetchUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
           phone_number: phoneNumber,
           context_id: contextId,
           purpose: purpose,
-        },
+        }),
       })
       
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Request timed out after 30 seconds')), 30000)
-      })
+      const responseText = await fetchResponse.text()
+      console.log('[useCall] Raw response status:', fetchResponse.status)
+      console.log('[useCall] Raw response body:', responseText)
       
-      const response = await Promise.race([invokePromise, timeoutPromise]) as Awaited<typeof invokePromise>
-
-      console.log('[useCall] call-start response received:', JSON.stringify(response, null, 2))
-
-      if (response.error) {
-        console.error('[useCall] Call start API error:', response.error)
-        console.error('[useCall] Full error object:', JSON.stringify(response.error, null, 2))
-        
-        // Try to extract meaningful error message from various formats
-        let errorMsg = 'Unable to start call. Please try again.'
-        
-        // Supabase FunctionsHttpError contains the response body in context
-        if (response.error.context) {
-          try {
-            const contextBody = await response.error.context.json()
-            console.error('[useCall] Error context body:', contextBody)
-            if (contextBody.error) {
-              errorMsg = contextBody.error
-            }
-          } catch {
-            // Try text
-            try {
-              const contextText = await response.error.context.text()
-              console.error('[useCall] Error context text:', contextText)
-              const parsed = JSON.parse(contextText)
-              if (parsed.error) errorMsg = parsed.error
-            } catch {
-              // ignore
-            }
-          }
-        } else if (typeof response.error === 'object' && response.error.message) {
-          errorMsg = response.error.message
+      let response: { data?: { call?: Call; error?: string }; error?: { message: string } }
+      
+      try {
+        const parsed = JSON.parse(responseText)
+        if (fetchResponse.ok) {
+          response = { data: parsed }
+        } else {
+          // Error response - extract error message
+          const errorMsg = parsed.error || `Server error (${fetchResponse.status})`
+          console.error('[useCall] Edge function error:', errorMsg)
+          setError(errorMsg)
+          throw new Error(errorMsg)
         }
-        
-        setError(errorMsg)
-        throw new Error(errorMsg)
+      } catch (parseError) {
+        if (parseError instanceof SyntaxError) {
+          console.error('[useCall] Failed to parse response:', responseText)
+          const errorMsg = `Server error (${fetchResponse.status})`
+          setError(errorMsg)
+          throw new Error(errorMsg)
+        }
+        throw parseError // Re-throw the error from the block above
       }
 
       // Check if backend returned an error in the data

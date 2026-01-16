@@ -3,7 +3,6 @@ import { useChat } from '../../hooks/useChat'
 import { useCall } from '../../hooks/useCall'
 import { useConversations } from '../../hooks/useConversations'
 import CallCard from './CallCard'
-import CallHistory from './CallHistory'
 import ChatSidebar from './ChatSidebar'
 
 export default function ChatContainer() {
@@ -186,9 +185,6 @@ export default function ChatContainer() {
             <div ref={messagesEndRef} />
           </div>
         </main>
-
-        {/* Call History */}
-        <CallHistory />
 
         {/* Input Bar - Fixed at bottom with safe area for home indicator */}
         <div className="flex-shrink-0 bg-[#f8f8f8] border-t border-gray-200 px-4 pt-3 pb-safe">
