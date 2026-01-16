@@ -148,6 +148,35 @@ export const STATUS_COLORS: Record<CallCardStatus, { bg: string; text: string; d
   'canceled': { bg: 'bg-gray-100', text: 'text-gray-700', dot: 'bg-gray-500' }
 }
 
+// Role visual system - three distinct roles
+// User: blue (main chat only, right-aligned) - NEVER appears in call card
+// OneCalla: teal (call card), light gray (main chat) - product identity
+// Other Party: neutral gray - external caller
+export const ROLE_COLORS = {
+  // User in main chat - blue (reserved, never in call card)
+  user: {
+    bubble: 'bg-blue-500',
+    text: 'text-white',
+  },
+  // OneCalla in main chat - light neutral
+  onecalla_chat: {
+    bubble: 'bg-gray-100',
+    text: 'text-gray-900',
+  },
+  // OneCalla in call card - teal (distinct from user blue)
+  onecalla_call: {
+    bubble: 'bg-teal-500',
+    text: 'text-white',
+    label: 'text-teal-600',
+  },
+  // Other party in call card - neutral gray
+  other_party: {
+    bubble: 'bg-gray-200',
+    text: 'text-gray-900',
+    label: 'text-gray-500',
+  },
+}
+
 export interface Database {
   public: {
     Tables: {
