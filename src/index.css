@@ -126,6 +126,20 @@ body {
   animation: pulse-ring 1.5s ease-out infinite;
 }
 
+/* Slide-in animation for drawers */
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-right {
+  animation: slideInRight 0.25s ease-out forwards;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;

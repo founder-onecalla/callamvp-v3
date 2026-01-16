@@ -431,18 +431,35 @@ export function CallProvider({ children }: { children: ReactNode }) {
       console.log('[useCall] Invoking call-start edge function...')
       console.log('[useCall] Phone number:', phoneNumber)
       console.log('[useCall] Purpose:', purpose)
+      console.log('[useCall] Access token (first 20 chars):', session.access_token?.substring(0, 20) + '...')
+      console.log('[useCall] Token expires at:', session.expires_at ? new Date(session.expires_at * 1000).toISOString() : 'unknown')
+      
+      // Check if token is expired and refresh if needed
+      let currentToken = session.access_token
+      if (session.expires_at && session.expires_at * 1000 < Date.now()) {
+        console.error('[useCall] Token is EXPIRED! Attempting refresh...')
+        const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession()
+        if (refreshError || !refreshData.session) {
+          console.error('[useCall] Failed to refresh session:', refreshError)
+          setError('Session expired. Please sign out and sign back in.')
+          throw new Error('Session expired')
+        }
+        console.log('[useCall] Session refreshed successfully')
+        currentToken = refreshData.session.access_token
+      }
       
       // Use direct fetch for better error handling
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
       const fetchUrl = `${supabaseUrl}/functions/v1/call-start`
       
       console.log('[useCall] Fetch URL:', fetchUrl)
+      console.log('[useCall] Using token (first 20):', currentToken?.substring(0, 20) + '...')
       
       const fetchResponse = await fetch(fetchUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
+          'Authorization': `Bearer ${currentToken}`,
         },
         body: JSON.stringify({
           phone_number: phoneNumber,
