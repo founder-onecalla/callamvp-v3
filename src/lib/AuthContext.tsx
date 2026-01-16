@@ -44,7 +44,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const signOut = async () => {
-    await supabase.auth.signOut()
+    try {
+      await supabase.auth.signOut()
+    } catch (error) {
+      console.error('Sign out error:', error)
+    }
+    // Force clear local state even if signOut fails
+    setUser(null)
+    setSession(null)
+    // Clear any cached auth data
+    localStorage.removeItem('sb-dkxhtrwwgniontcjpomi-auth-token')
   }
 
   return (
