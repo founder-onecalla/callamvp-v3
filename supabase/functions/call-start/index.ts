@@ -128,6 +128,27 @@ serve(async (req) => {
     console.log('call-start: FROM:', telnyxFromNumber)
     console.log('call-start: TO:', formattedNumber)
 
+    // Validate phone numbers before calling
+    if (!telnyxFromNumber.startsWith('+')) {
+      console.error('call-start: Invalid FROM number format - must start with +')
+      throw new Error('Invalid from number format in configuration')
+    }
+    if (!formattedNumber.startsWith('+')) {
+      console.error('call-start: Invalid TO number format - must start with +')
+      throw new Error('Invalid destination phone number format')
+    }
+
+    const telnyxPayload = {
+      connection_id: telnyxConnectionId,
+      to: formattedNumber,
+      from: telnyxFromNumber,
+      webhook_url: webhookUrl,
+      webhook_url_method: 'POST',
+      client_state: btoa(JSON.stringify({ call_id: call.id, user_id: user.id })),
+    }
+    
+    console.log('call-start: Telnyx request payload:', JSON.stringify(telnyxPayload, null, 2))
+
     let telnyxResponse
     try {
       telnyxResponse = await fetch('https://api.telnyx.com/v2/calls', {
@@ -136,35 +157,73 @@ serve(async (req) => {
           'Authorization': `Bearer ${telnyxApiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          connection_id: telnyxConnectionId,
-          to: formattedNumber,
-          from: telnyxFromNumber,
-          webhook_url: webhookUrl,
-          webhook_url_method: 'POST',
-          client_state: btoa(JSON.stringify({ call_id: call.id, user_id: user.id })),
-        }),
+        body: JSON.stringify(telnyxPayload),
       })
     } catch (fetchError) {
       console.error('call-start: Telnyx fetch failed:', fetchError)
+      console.error('call-start: Fetch error details:', {
+        name: fetchError.name,
+        message: fetchError.message,
+        cause: fetchError.cause
+      })
       await serviceClient
         .from('calls')
-        .update({ status: 'ended', ended_at: new Date().toISOString(), outcome: 'failed' })
+        .update({ 
+          status: 'ended', 
+          ended_at: new Date().toISOString(), 
+          outcome: 'failed',
+          pipeline_checkpoints: { error: 'telnyx_fetch_failed', details: fetchError.message }
+        })
         .eq('id', call.id)
       throw new Error('Failed to connect to Telnyx')
     }
 
     console.log('call-start: Telnyx response status:', telnyxResponse.status)
+    console.log('call-start: Telnyx response headers:', Object.fromEntries(telnyxResponse.headers.entries()))
 
     if (!telnyxResponse.ok) {
       const errorText = await telnyxResponse.text()
-      console.error('call-start: Telnyx API error:', telnyxResponse.status, errorText)
+      console.error('call-start: ❌ TELNYX API ERROR')
+      console.error('call-start: Status:', telnyxResponse.status)
+      console.error('call-start: Response:', errorText)
+      
+      // Parse error details if possible
+      let errorDetails = errorText
+      try {
+        const errorJson = JSON.parse(errorText)
+        errorDetails = JSON.stringify(errorJson, null, 2)
+        console.error('call-start: Parsed error:', errorJson)
+      } catch {
+        // Keep raw text
+      }
+      
       // Update call status to ended if Telnyx fails
       await serviceClient
         .from('calls')
-        .update({ status: 'ended', ended_at: new Date().toISOString(), outcome: 'failed' })
+        .update({ 
+          status: 'ended', 
+          ended_at: new Date().toISOString(), 
+          outcome: 'failed',
+          pipeline_checkpoints: { 
+            error: 'telnyx_api_error', 
+            status: telnyxResponse.status,
+            details: errorDetails.substring(0, 500)
+          }
+        })
         .eq('id', call.id)
-      throw new Error(`Telnyx API error (${telnyxResponse.status}): ${errorText}`)
+      
+      // Provide user-friendly error messages
+      if (telnyxResponse.status === 401 || telnyxResponse.status === 403) {
+        throw new Error('Phone service authentication failed. Please contact support.')
+      } else if (telnyxResponse.status === 400) {
+        throw new Error('Invalid call request. Please check the phone number.')
+      } else if (telnyxResponse.status === 402) {
+        throw new Error('Phone service billing issue. Please contact support.')
+      } else if (telnyxResponse.status === 422) {
+        throw new Error('Invalid phone number or configuration. Please try again.')
+      } else {
+        throw new Error(`Phone service error (${telnyxResponse.status}). Please try again.`)
+      }
     }
 
     const telnyxData = await telnyxResponse.json()

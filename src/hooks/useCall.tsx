@@ -423,6 +423,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
     stopPolling()
 
     try {
+      console.log('[useCall] Starting call to:', phoneNumber)
+      
       const response = await supabase.functions.invoke('call-start', {
         body: {
           phone_number: phoneNumber,
@@ -431,25 +433,43 @@ export function CallProvider({ children }: { children: ReactNode }) {
         },
       })
 
+      console.log('[useCall] Call start response:', response)
+
       if (response.error) {
-        console.error('Call start API error:', response.error)
-        const errorMsg = 'Unable to start call. Please try again.'
+        console.error('[useCall] Call start API error:', response.error)
+        // Try to extract meaningful error message
+        let errorMsg = 'Unable to start call. Please try again.'
+        if (typeof response.error === 'object' && response.error.message) {
+          errorMsg = response.error.message
+        }
+        setError(errorMsg)
+        throw new Error(errorMsg)
+      }
+
+      // Check if backend returned an error in the data
+      if (response.data?.error) {
+        console.error('[useCall] Call start returned error:', response.data.error)
+        const errorMsg = response.data.error || 'Call failed to start. Please try again.'
         setError(errorMsg)
         throw new Error(errorMsg)
       }
 
       if (!response.data?.call) {
-        console.error('Call start returned no call data:', response.data)
+        console.error('[useCall] Call start returned no call data:', response.data)
         const errorMsg = 'Call failed to start. Please try again.'
         setError(errorMsg)
         throw new Error(errorMsg)
       }
 
+      console.log('[useCall] Call started successfully:', response.data.call.id)
       // Call started successfully
       setCurrentCall(response.data.call)
     } catch (err) {
-      console.error('Failed to start call:', err)
-      const errorMsg = err instanceof Error ? err.message : 'Unable to start call. Please try again.'
+      console.error('[useCall] Failed to start call:', err)
+      // Preserve specific error messages from backend
+      const errorMsg = err instanceof Error && err.message && !err.message.includes('FunctionsHttpError') 
+        ? err.message 
+        : 'Unable to start call. Please try again.'
       setError(errorMsg)
       setIsLoading(false)
       throw err
