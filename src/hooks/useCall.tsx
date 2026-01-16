@@ -408,15 +408,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
   }, [currentCall])
 
   const startCall = useCallback(async (phoneNumber: string, contextId?: string, purpose?: string, conversationId?: string | null) => {
-    console.log('[useCall] startCall called with:', { phoneNumber, contextId, purpose, conversationId })
-    
     if (!session?.access_token) {
-      console.error('[useCall] Not authenticated - no access token')
       setError('Not authenticated')
       throw new Error('Not authenticated')
     }
-    
-    console.log('[useCall] Session valid, access_token exists')
 
     setIsLoading(true)
     setError(null)
@@ -428,56 +423,21 @@ export function CallProvider({ children }: { children: ReactNode }) {
     stopPolling()
 
     try {
-      console.log('[useCall] Invoking call-start edge function...')
-      console.log('[useCall] Phone number:', phoneNumber)
-      console.log('[useCall] Purpose:', purpose)
-      console.log('[useCall] Access token (first 20 chars):', session.access_token?.substring(0, 20) + '...')
-      console.log('[useCall] Token expires at:', session.expires_at ? new Date(session.expires_at * 1000).toISOString() : 'unknown')
-      
-      // #region agent log - Hypothesis A,D: Check Supabase config
-      const envUrl = import.meta.env.VITE_SUPABASE_URL
-      const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY
-      console.log('[DEBUG-A] Supabase URL:', envUrl)
-      console.log('[DEBUG-A] Anon key first 20:', envKey?.substring(0,20))
-      console.log('[DEBUG-A] Anon key last 10:', envKey?.substring(envKey.length-10))
-      fetch('http://127.0.0.1:7242/ingest/1c58ddf9-a044-4791-b751-6563effc4c78',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useCall.tsx:env-check',message:'Supabase env vars',data:{supabaseUrl:envUrl,anonKeyFirst20:envKey?.substring(0,20),anonKeyLast10:envKey?.substring(envKey.length-10)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,D'})}).catch(()=>{});
-      // #endregion
-      
-      // #region agent log - Hypothesis B,C: Check token details
-      const tokenParts = session.access_token?.split('.') || []
-      let tokenHeader = null
-      let tokenPayload = null
-      try {
-        tokenHeader = JSON.parse(atob(tokenParts[0] || ''))
-        tokenPayload = JSON.parse(atob(tokenParts[1] || ''))
-      } catch(e) { /* ignore */ }
-      console.log('[DEBUG-B] Token header:', tokenHeader)
-      console.log('[DEBUG-B] Token issuer (iss):', tokenPayload?.iss)
-      console.log('[DEBUG-B] Token audience (aud):', tokenPayload?.aud)
-      console.log('[DEBUG-B] Token role:', tokenPayload?.role)
-      fetch('http://127.0.0.1:7242/ingest/1c58ddf9-a044-4791-b751-6563effc4c78',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useCall.tsx:token-check',message:'JWT token details',data:{tokenHeader,tokenIss:tokenPayload?.iss,tokenAud:tokenPayload?.aud,tokenSub:tokenPayload?.sub,tokenRole:tokenPayload?.role},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B,C'})}).catch(()=>{});
-      // #endregion
       
       // Check if token is expired and refresh if needed
       let currentToken = session.access_token
       if (session.expires_at && session.expires_at * 1000 < Date.now()) {
-        console.error('[useCall] Token is EXPIRED! Attempting refresh...')
         const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession()
         if (refreshError || !refreshData.session) {
-          console.error('[useCall] Failed to refresh session:', refreshError)
           setError('Session expired. Please sign out and sign back in.')
           throw new Error('Session expired')
         }
-        console.log('[useCall] Session refreshed successfully')
         currentToken = refreshData.session.access_token
       }
       
       // Use direct fetch for better error handling
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
       const fetchUrl = `${supabaseUrl}/functions/v1/call-start`
-      
-      console.log('[useCall] Fetch URL:', fetchUrl)
-      console.log('[useCall] Using token (first 20):', currentToken?.substring(0, 20) + '...')
       
       const fetchResponse = await fetch(fetchUrl, {
         method: 'POST',
@@ -493,8 +453,6 @@ export function CallProvider({ children }: { children: ReactNode }) {
       })
       
       const responseText = await fetchResponse.text()
-      console.log('[useCall] Raw response status:', fetchResponse.status)
-      console.log('[useCall] Raw response body:', responseText)
       
       let response: { data?: { call?: Call; error?: string }; error?: { message: string } }
       
@@ -534,8 +492,6 @@ export function CallProvider({ children }: { children: ReactNode }) {
         throw new Error(errorMsg)
       }
 
-      console.log('[useCall] Call started successfully:', response.data.call.id)
-      // Call started successfully
       setCurrentCall(response.data.call)
     } catch (err) {
       console.error('[useCall] Failed to start call:', err)

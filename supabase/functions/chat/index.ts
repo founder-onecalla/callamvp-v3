@@ -266,6 +266,9 @@ Be conversational, helpful, and safety-conscious. Keep responses concise. Ask qu
 ## User Contacts Available
 {USER_CONTACTS}
 
+## User Caller Identity
+{CALLER_IDENTITY}
+
 ## Known IVR Paths
 {IVR_PATHS}`
 
@@ -367,17 +370,44 @@ async function executeFunction(
   }
 }
 
+// User settings types
+interface UserSettings {
+  user_id: string
+  display_name: string | null
+  default_caller_mode: 'SELF_NAME' | 'OTHER_NAME' | 'DONT_DISCLOSE'
+  default_caller_other_name: string | null
+  require_sensitive_confirmation: boolean
+}
+
+// Get caller name based on settings
+function getCallerName(settings: UserSettings | null): string | null {
+  if (!settings) return null
+
+  switch (settings.default_caller_mode) {
+    case 'SELF_NAME':
+      return settings.display_name
+    case 'OTHER_NAME':
+      return settings.default_caller_other_name
+    case 'DONT_DISCLOSE':
+      return null
+    default:
+      return settings.display_name
+  }
+}
+
 async function getUserContext(userId: string, serviceClient: ReturnType<typeof createClient>) {
   // Fetch all context data in parallel for speed
-  const [memoriesResult, contactsResult, ivrPathsResult] = await Promise.all([
+  const [memoriesResult, contactsResult, ivrPathsResult, settingsResult] = await Promise.all([
     serviceClient.from('user_memories').select('key, value, category').eq('user_id', userId),
     serviceClient.from('user_contacts').select('name, phone_number, type, company').eq('user_id', userId),
-    serviceClient.from('ivr_paths').select('company_name, department, phone_number, required_info, operating_hours')
+    serviceClient.from('ivr_paths').select('company_name, department, phone_number, required_info, operating_hours'),
+    serviceClient.from('user_settings').select('*').eq('user_id', userId).maybeSingle()
   ])
 
   const memories = memoriesResult.data
   const contacts = contactsResult.data
   const ivrPaths = ivrPathsResult.data
+  const settings = settingsResult.data as UserSettings | null
 
   const memoriesText = memories?.length
     ? memories.map(m => `- ${m.key}: ${m.value} (${m.category})`).join('\n')
@@ -391,7 +421,18 @@ async function getUserContext(userId: string, serviceClient: ReturnType<typeof c
     ? ivrPaths.map(i => `- ${i.company_name} (${i.department}): ${i.phone_number}\n  Required: ${(i.required_info as string[])?.join(', ') || 'None'}\n  Hours: ${i.operating_hours || 'Unknown'}`).join('\n')
     : 'No IVR paths configured.'
 
-  return { memoriesText, contactsText, ivrText }
+  // Get caller name from settings
+  const callerName = getCallerName(settings)
+  const callerText = callerName
+    ? `User's default caller identity: "${callerName}" (use this when the voice agent says "calling on behalf of")`
+    : settings?.default_caller_mode === 'DONT_DISCLOSE'
+      ? 'User prefers not to disclose caller identity.'
+      : 'No caller identity configured.'
+
+  // Sensitive confirmation preference
+  const requireSensitiveConfirmation = settings?.require_sensitive_confirmation ?? true
+
+  return { memoriesText, contactsText, ivrText, callerText, callerName, requireSensitiveConfirmation }
 }
 
 serve(async (req) => {
@@ -480,15 +521,23 @@ serve(async (req) => {
     } catch (contextError) {
       console.error('[chat] Failed to get user context:', contextError)
       // Continue without context rather than failing the whole request
-      userContext = { memoriesText: 'No saved memories yet.', contactsText: 'No saved contacts yet.', ivrText: 'No IVR paths configured.' }
+      userContext = {
+        memoriesText: 'No saved memories yet.',
+        contactsText: 'No saved contacts yet.',
+        ivrText: 'No IVR paths configured.',
+        callerText: 'No caller identity configured.',
+        callerName: null,
+        requireSensitiveConfirmation: true
+      }
     }
-    const { memoriesText, contactsText, ivrText } = userContext
-    console.log('[chat] User context fetched')
+    const { memoriesText, contactsText, ivrText, callerText, callerName, requireSensitiveConfirmation } = userContext
+    console.log('[chat] User context fetched, callerName:', callerName || 'none')
 
     // Build personalized system prompt
     const personalizedPrompt = systemPrompt
       .replace('{USER_MEMORIES}', memoriesText)
       .replace('{USER_CONTACTS}', contactsText)
+      .replace('{CALLER_IDENTITY}', callerText)
       .replace('{IVR_PATHS}', ivrText)
 
     // Force place_call if user is confirming and we have phone context

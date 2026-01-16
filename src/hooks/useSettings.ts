@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
-import type { UserSettings, CallerMode, ThemeMode, TextSizeMode } from '../lib/types'
-import { DEFAULT_SETTINGS } from '../lib/types'
+import type { UserSettings } from '../lib/types'
 
 interface UseSettingsReturn {
   settings: UserSettings | null
@@ -109,30 +108,40 @@ export function useSettings(): UseSettingsReturn {
     try {
       setError(null)
 
-      // Delete transcriptions first (foreign key constraint)
-      const { error: transcriptError } = await supabase
-        .from('transcriptions')
-        .delete()
-        .in('call_id',
-          supabase.from('calls').select('id').eq('user_id', user.id)
-        )
-
-      // Delete call events
-      const { error: eventsError } = await supabase
-        .from('call_events')
-        .delete()
-        .in('call_id',
-          supabase.from('calls').select('id').eq('user_id', user.id)
-        )
-
-      // Delete calls
-      const { error: callsError } = await supabase
+      // First, get all call IDs for this user
+      const { data: userCalls, error: fetchError } = await supabase
         .from('calls')
-        .delete()
+        .select('id')
         .eq('user_id', user.id)
 
-      if (transcriptError || eventsError || callsError) {
-        throw new Error('Failed to delete call history')
+      if (fetchError) throw fetchError
+
+      if (userCalls && userCalls.length > 0) {
+        const callIds = userCalls.map(c => c.id)
+
+        // Delete transcriptions first (foreign key constraint)
+        const { error: transcriptError } = await supabase
+          .from('transcriptions')
+          .delete()
+          .in('call_id', callIds)
+
+        if (transcriptError) throw transcriptError
+
+        // Delete call events
+        const { error: eventsError } = await supabase
+          .from('call_events')
+          .delete()
+          .in('call_id', callIds)
+
+        if (eventsError) throw eventsError
+
+        // Delete calls
+        const { error: callsError } = await supabase
+          .from('calls')
+          .delete()
+          .eq('user_id', user.id)
+
+        if (callsError) throw callsError
       }
 
       return true

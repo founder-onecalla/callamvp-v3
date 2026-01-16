@@ -6,6 +6,30 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// User settings types
+interface UserSettings {
+  user_id: string
+  display_name: string | null
+  default_caller_mode: 'SELF_NAME' | 'OTHER_NAME' | 'DONT_DISCLOSE'
+  default_caller_other_name: string | null
+}
+
+// Get caller name based on settings
+function getCallerName(settings: UserSettings | null): string | null {
+  if (!settings) return null
+
+  switch (settings.default_caller_mode) {
+    case 'SELF_NAME':
+      return settings.display_name
+    case 'OTHER_NAME':
+      return settings.default_caller_other_name
+    case 'DONT_DISCLOSE':
+      return null
+    default:
+      return settings.display_name
+  }
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -68,18 +92,48 @@ serve(async (req) => {
     }
     console.log('call-start: Call record created', call.id)
 
+    // Fetch user settings to get caller name
+    const { data: userSettings } = await serviceClient
+      .from('user_settings')
+      .select('display_name, default_caller_mode, default_caller_other_name')
+      .eq('user_id', user.id)
+      .maybeSingle()
+
+    const callerName = getCallerName(userSettings as UserSettings | null)
+    console.log('call-start: Caller name from settings:', callerName || 'none')
+
+    // Build gathered_info with caller name from settings
+    const gatheredInfo: Record<string, string> = {}
+    if (callerName) {
+      gatheredInfo.caller_name = callerName
+    }
+
     // Link call context to this call if context_id provided
     // Or create one from purpose if no context_id
     if (context_id) {
+      // Update existing context with caller_name if not already set
+      const { data: existingContext } = await serviceClient
+        .from('call_contexts')
+        .select('gathered_info')
+        .eq('id', context_id)
+        .single()
+
+      const existingInfo = (existingContext?.gathered_info as Record<string, string>) || {}
+      const updatedInfo = { ...existingInfo }
+      if (callerName && !updatedInfo.caller_name) {
+        updatedInfo.caller_name = callerName
+      }
+
       await serviceClient
         .from('call_contexts')
         .update({
           call_id: call.id,
-          status: 'ready'
+          status: 'ready',
+          gathered_info: updatedInfo
         })
         .eq('id', context_id)
         .eq('user_id', user.id)
-      console.log('call-start: Linked call context', context_id)
+      console.log('call-start: Linked call context', context_id, 'with caller_name:', updatedInfo.caller_name || 'none')
     } else if (purpose) {
       // Create a call context from the purpose so voice-agent knows what to do
       const { data: newContext, error: contextError } = await serviceClient
@@ -89,7 +143,7 @@ serve(async (req) => {
           call_id: call.id,
           intent_category: 'personal',
           intent_purpose: purpose,
-          gathered_info: {},
+          gathered_info: gatheredInfo,
           status: 'ready'
         })
         .select()
@@ -98,7 +152,7 @@ serve(async (req) => {
       if (contextError) {
         console.error('call-start: Failed to create call context', contextError)
       } else {
-        console.log('call-start: Created call context from purpose', newContext.id)
+        console.log('call-start: Created call context from purpose', newContext.id, 'with caller_name:', callerName || 'none')
       }
     }
 
