@@ -174,9 +174,9 @@ export default function ChatContainer() {
               </div>
             )}
 
-            {/* Error */}
+            {/* Error - user-friendly, not alarming */}
             {error && (
-              <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl text-sm">
+              <div className="bg-slate-50 border border-slate-200 text-slate-600 px-4 py-3 rounded-xl text-sm">
                 {error}
               </div>
             )}

@@ -111,7 +111,9 @@ export function useChat(): UseChatReturn {
       })
 
       if (response.error) {
-        throw new Error(response.error.message)
+        // Log actual error for debugging, but show user-friendly message
+        console.error('Chat API error:', response.error)
+        throw new Error('Unable to process your message right now. Please try again.')
       }
 
       const { message, function_call, function_result } = response.data
@@ -155,7 +157,14 @@ export function useChat(): UseChatReturn {
         setMessages((prev) => [...prev, assistantMessage])
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to send message')
+      console.error('Send message error:', err)
+      // Never show raw system errors to users
+      const message = err instanceof Error ? err.message : ''
+      if (message.includes('Unable to process') || message.includes('try again')) {
+        setError(message)
+      } else {
+        setError('Something went wrong. Please try again.')
+      }
     } finally {
       setIsLoading(false)
     }
@@ -183,7 +192,8 @@ export function useChat(): UseChatReturn {
       setMessages(data || [])
       addedSummariesRef.current.clear()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load conversation')
+      console.error('Load conversation error:', err)
+      setError('Unable to load conversation. Please try again.')
     } finally {
       setIsLoading(false)
     }

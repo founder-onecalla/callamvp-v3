@@ -270,13 +270,14 @@ export function CallProvider({ children }: { children: ReactNode }) {
       })
 
       if (response.error) {
-        throw new Error(response.error.message)
+        console.error('Call start API error:', response.error)
+        throw new Error('Unable to start call. Please try again.')
       }
 
       setCurrentCall(response.data.call)
     } catch (err) {
       console.error('Failed to start call:', err)
-      setError(err instanceof Error ? err.message : 'Failed to start call')
+      setError('Unable to start call. Please try again.')
     } finally {
       setIsLoading(false)
     }
@@ -294,10 +295,12 @@ export function CallProvider({ children }: { children: ReactNode }) {
       })
 
       if (response.error) {
-        throw new Error(response.error.message)
+        console.error('Hangup API error:', response.error)
+        throw new Error('Unable to end call.')
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to hang up')
+      console.error('Failed to hang up:', err)
+      // Don't show error for hangup - call might already be ended
     } finally {
       setIsLoading(false)
     }
@@ -314,10 +317,12 @@ export function CallProvider({ children }: { children: ReactNode }) {
       })
 
       if (response.error) {
-        throw new Error(response.error.message)
+        console.error('DTMF API error:', response.error)
+        // Don't show error for DTMF - it's not critical
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to send DTMF')
+      console.error('Failed to send DTMF:', err)
+      // Don't show error for DTMF - it's not critical
     }
   }, [currentCall])
 
