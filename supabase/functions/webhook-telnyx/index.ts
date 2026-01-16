@@ -463,17 +463,8 @@ serve(async (req) => {
       }
 
       case 'call.transcription': {
-        // Handle real-time transcription
-        // NOTE: This event is only received in LEGACY mode (Telnyx transcription)
-        // When using OpenAI Realtime API bridge, transcriptions come from the bridge WebSocket
+        // Handle real-time transcription from Telnyx
         const transcription = event.payload.transcription_data
-
-        // Check if using Realtime API bridge - if so, this is unexpected (ignore)
-        const usingRealtimeBridge = !!Deno.env.get('AUDIO_BRIDGE_URL')
-        if (usingRealtimeBridge) {
-          console.log('[webhook] Transcription event received but using Realtime API - ignoring')
-          break
-        }
 
         // Log full transcription payload for debugging
         console.log('[webhook] Transcription event received:', JSON.stringify({

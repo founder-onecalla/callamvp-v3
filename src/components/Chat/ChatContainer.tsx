@@ -25,11 +25,6 @@ export default function ChatContainer() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const isFirstMessage = useRef(true)
 
-  // Debug: log whenever messages change
-  useEffect(() => {
-    console.log('[ChatContainer] messages changed, count:', messages.length, messages.map(m => m.content.substring(0, 30)))
-  }, [messages])
-
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, currentCall])

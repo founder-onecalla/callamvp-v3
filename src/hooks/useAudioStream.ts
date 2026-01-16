@@ -93,7 +93,6 @@ export function useAudioStream({ relayUrl, callId }: UseAudioStreamOptions): Use
       wsRef.current = new WebSocket(wsUrl)
 
       wsRef.current.onopen = () => {
-        console.log('Connected to audio relay')
         setIsConnected(true)
       }
 
@@ -104,13 +103,8 @@ export function useAudioStream({ relayUrl, callId }: UseAudioStreamOptions): Use
           if (data.type === 'audio' && data.payload) {
             const samples = decodePCMU(data.payload)
             playAudio(samples, 8000)
-          } else if (data.type === 'start') {
-            console.log('Stream started:', data)
           } else if (data.type === 'stop') {
-            console.log('Stream stopped')
             setIsPlaying(false)
-          } else if (data.type === 'connected') {
-            console.log('Confirmed connection for call:', data.callId)
           }
         } catch (e) {
           console.error('Error processing audio message:', e)
@@ -118,13 +112,11 @@ export function useAudioStream({ relayUrl, callId }: UseAudioStreamOptions): Use
       }
 
       wsRef.current.onclose = () => {
-        console.log('Disconnected from audio relay')
         setIsConnected(false)
         setIsPlaying(false)
       }
 
-      wsRef.current.onerror = (e) => {
-        console.error('WebSocket error:', e)
+      wsRef.current.onerror = () => {
         setError('Connection error')
         setIsConnected(false)
       }

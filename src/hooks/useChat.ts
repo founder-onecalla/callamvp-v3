@@ -49,17 +49,12 @@ export function useChat(): UseChatReturn {
     functionResult?: { success: boolean; data?: unknown },
     conversationId?: string | null
   ) => {
-    console.log('[useChat] handleFunctionCall:', { name, args, functionResult, conversationId })
-
     switch (name) {
       case 'place_call': {
-        console.log('[useChat] Handling place_call function')
         // Include context_id if one was created during info gathering
         const contextId = args.context_id as string || callContextRef.current
         const purpose = args.purpose as string | undefined
-        console.log('[useChat] Calling startCall with phone:', args.phone_number, 'context:', contextId, 'purpose:', purpose, 'conversationId:', conversationId)
         await startCall(args.phone_number as string, contextId || undefined, purpose, conversationId)
-        console.log('[useChat] startCall completed')
         callContextRef.current = null // Reset after call starts
         return `Initiating call to ${args.phone_number}...`
       }
@@ -88,7 +83,6 @@ export function useChat(): UseChatReturn {
   }, [startCall, hangUp, sendDtmf])
 
   const sendMessage = useCallback(async (content: string, conversationId?: string | null) => {
-    console.log('[sendMessage] START', { content, conversationId })
     setIsLoading(true)
     setError(null)
 
@@ -102,13 +96,7 @@ export function useChat(): UseChatReturn {
       created_at: new Date().toISOString(),
     }
 
-    console.log('[sendMessage] Adding user message to state')
-    setMessages((prev) => {
-      console.log('[sendMessage] setMessages callback - prev length:', prev.length)
-      const newMessages = [...prev, userMessage]
-      console.log('[sendMessage] setMessages callback - new length:', newMessages.length)
-      return newMessages
-    })
+    setMessages((prev) => [...prev, userMessage])
 
     try {
       const response = await supabase.functions.invoke('chat', {
@@ -130,7 +118,6 @@ export function useChat(): UseChatReturn {
 
       // Handle function calls from the AI
       if (function_call) {
-        console.log('[useChat] GPT called function:', function_call.name, function_call.arguments)
         const functionResultText = await handleFunctionCall(
           function_call.name,
           function_call.arguments,
@@ -175,16 +162,12 @@ export function useChat(): UseChatReturn {
   }, [messages, currentCall, handleFunctionCall])
 
   const clearMessages = useCallback(() => {
-    console.log('[clearMessages] CLEARING ALL MESSAGES')
-    console.trace('[clearMessages] Stack trace:')
     setMessages([])
     callContextRef.current = null
     addedSummariesRef.current.clear()
   }, [])
 
   const loadConversation = useCallback(async (conversationId: string) => {
-    console.log('[loadConversation] LOADING from DB', { conversationId })
-    console.trace('[loadConversation] Stack trace:')
     setIsLoading(true)
     setError(null)
 
@@ -197,7 +180,6 @@ export function useChat(): UseChatReturn {
 
       if (fetchError) throw fetchError
 
-      console.log('[loadConversation] Setting messages from DB, count:', data?.length || 0)
       setMessages(data || [])
       addedSummariesRef.current.clear()
     } catch (err) {

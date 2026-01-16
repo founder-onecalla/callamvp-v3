@@ -118,7 +118,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
         }
 
         ws.onclose = () => {
-          console.log('[useCall] Bridge WebSocket closed')
+          // WebSocket closed
         }
       } catch (err) {
         console.error('[useCall] Failed to connect to bridge:', err)
@@ -184,11 +184,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   }, [currentCall?.id])
 
   const startCall = useCallback(async (phoneNumber: string, contextId?: string, purpose?: string, conversationId?: string | null) => {
-    console.log('[useCall] startCall invoked with:', { phoneNumber, contextId, purpose, conversationId })
-    console.log('[useCall] Session state:', { hasSession: !!session, hasAccessToken: !!session?.access_token })
-
     if (!session?.access_token) {
-      console.error('[useCall] No access token - user not authenticated')
       setError('Not authenticated')
       return
     }
@@ -202,7 +198,6 @@ export function CallProvider({ children }: { children: ReactNode }) {
     summaryRequestedRef.current = null
 
     try {
-      console.log('[useCall] Calling call-start Edge Function...')
       const response = await supabase.functions.invoke('call-start', {
         body: {
           phone_number: phoneNumber,
@@ -210,19 +205,14 @@ export function CallProvider({ children }: { children: ReactNode }) {
           purpose: purpose,
         },
       })
-      console.log('[useCall] call-start response:', response)
-
-      console.log('[useCall] call-start response:', response)
 
       if (response.error) {
-        console.error('[useCall] call-start error:', response.error)
         throw new Error(response.error.message)
       }
 
-      console.log('[useCall] Call created successfully:', response.data.call)
       setCurrentCall(response.data.call)
     } catch (err) {
-      console.error('[useCall] startCall exception:', err)
+      console.error('Failed to start call:', err)
       setError(err instanceof Error ? err.message : 'Failed to start call')
     } finally {
       setIsLoading(false)
