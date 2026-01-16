@@ -107,6 +107,24 @@ serve(async (req) => {
     if (callerName) {
       gatheredInfo.caller_name = callerName
     }
+    
+    // Extract recipient name from purpose if available
+    if (purpose) {
+      const recipientPatterns = [
+        /(?:call|tell|ask|wish|say to|reach|contact)\s+(\w+)/i,
+        /name(?:'s|is)\s+(\w+)/i,
+        /(?:to|for)\s+(\w+)(?:'s|\s)/i,
+      ]
+      const excludedWords = ['me', 'you', 'them', 'her', 'him', 'a', 'the', 'and', 'happy', 'birthday']
+      for (const pattern of recipientPatterns) {
+        const match = purpose.match(pattern)
+        if (match && match[1] && !excludedWords.includes(match[1].toLowerCase())) {
+          gatheredInfo.recipient_name = match[1]
+          console.log('call-start: Extracted recipient_name from purpose:', match[1])
+          break
+        }
+      }
+    }
 
     // Link call context to this call if context_id provided
     // Or create one from purpose if no context_id
