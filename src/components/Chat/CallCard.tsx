@@ -16,7 +16,7 @@ const statusConfig = {
 }
 
 export default function CallCard() {
-  const { currentCall, transcriptions, callEvents, hangUp, sendDtmf, callCardData } = useCall()
+  const { currentCall, transcriptions, hangUp, sendDtmf, callCardData } = useCall()
   const [isExpanded, setIsExpanded] = useState(false)
   const [showKeypad, setShowKeypad] = useState(false)
   const [duration, setDuration] = useState(0)
