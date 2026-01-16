@@ -51,7 +51,7 @@ export interface Conversation {
 export interface CallEvent {
   id: string
   call_id: string
-  event_type: 'status_change' | 'dtmf_sent' | 'dtmf_received' | 'ivr_navigation' | 'transcription' | 'error'
+  event_type: 'status_change' | 'dtmf_sent' | 'dtmf_received' | 'ivr_navigation' | 'transcription' | 'error' | 'agent_speech' | 'hangup' | 'connected' | 'ringing' | 'ended' | 'mutual_goodbye' | 'closing_aborted' | 'streaming' | 'realtime_api'
   description: string
   metadata: Record<string, unknown>
   created_at: string

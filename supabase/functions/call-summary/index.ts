@@ -124,15 +124,29 @@ serve(async (req) => {
     }
 
     const wasAnswered = call.status === 'ended' && call.started_at !== null
-    const hasTranscriptions = transcriptions.length > 0
 
-    // Build transcript turns
-    const transcriptTurns = transcriptions.map(t => ({
-      speaker: (t.speaker === 'user' || t.speaker === 'agent') ? 'agent' as const : 'them' as const,
+    // Build transcript turns from ASR (them) and agent_speech events (our agent)
+    // 1. ASR transcriptions - what "them" said
+    const asrTurns = transcriptions.map(t => ({
+      speaker: 'them' as const,
       text: t.content,
       timestamp: t.created_at,
       confidence: t.confidence
     }))
+
+    // 2. Agent speech events - what our agent said (TTS text)
+    const agentSpeechEvents = events.filter(e => e.event_type === 'agent_speech')
+    const agentTurns = agentSpeechEvents.map(e => ({
+      speaker: 'agent' as const,
+      text: e.description || e.metadata?.text || '',
+      timestamp: e.created_at,
+      confidence: null as number | null
+    }))
+
+    // 3. Merge and sort chronologically
+    const transcriptTurns = [...asrTurns, ...agentTurns]
+      .filter(t => t.text && t.text.trim().length > 0)
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 
     // Build debug timeline from events
     const debugTimeline = events.map(e => ({
@@ -152,9 +166,10 @@ serve(async (req) => {
     const openaiKey = Deno.env.get('OPENAI_API_KEY')
     let aiExtraction: AIExtraction | null = null
 
-    if (openaiKey && hasTranscriptions) {
-      const transcriptText = transcriptions
-        .map(t => `${t.speaker === 'user' || t.speaker === 'agent' ? 'OneCalla' : 'Them'}: ${t.content}`)
+    const hasConversation = transcriptTurns.length > 0
+    if (openaiKey && hasConversation) {
+      const transcriptText = transcriptTurns
+        .map(t => `${t.speaker === 'agent' ? 'OneCalla' : 'Them'}: ${t.text}`)
         .join('\n')
 
       const systemPrompt = `You are analyzing a phone call transcript for OneCalla, a phone calling assistant.
@@ -230,7 +245,7 @@ Extract the summary and any key takeaways from this call.`
       // Generate fallback sentence if AI failed
       let sentence = aiExtraction?.sentence || ''
       if (!sentence) {
-        if (hasTranscriptions) {
+        if (hasConversation) {
           sentence = `Call connected for ${formatDuration(durationSec)}.`
         } else {
           sentence = `Call connected for ${formatDuration(durationSec)} but transcript wasn't captured.`
@@ -286,7 +301,7 @@ Extract the summary and any key takeaways from this call.`
       outcome,
       transcript: {
         turns: transcriptTurns,
-        hasFullTranscript: hasTranscriptions
+        hasFullTranscript: hasConversation
       },
       media: {
         hasRecording: false, // We don't have recording yet

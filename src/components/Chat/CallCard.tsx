@@ -16,7 +16,7 @@ const statusConfig = {
 }
 
 export default function CallCard() {
-  const { currentCall, transcriptions, hangUp, sendDtmf, callCardData } = useCall()
+  const { currentCall, transcriptions, callEvents, hangUp, sendDtmf, callCardData } = useCall()
   const [isExpanded, setIsExpanded] = useState(false)
   const [showKeypad, setShowKeypad] = useState(false)
   const [duration, setDuration] = useState(0)
@@ -45,12 +45,12 @@ export default function CallCard() {
     return () => clearInterval(interval)
   }, [currentCall?.status])
 
-  // Auto-scroll transcript
+  // Auto-scroll transcript when new messages arrive
   useEffect(() => {
     if (transcriptEndRef.current) {
       transcriptEndRef.current.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [transcriptions])
+  }, [transcriptions, callEvents])
 
   if (!currentCall) return null
 
@@ -70,13 +70,28 @@ export default function CallCard() {
   // Active call view (pending, ringing, answered)
   const status = statusConfig[currentCall.status]
 
-  // Convert transcriptions to TranscriptTurn format for display
-  const transcriptTurns = transcriptions.map(t => ({
-    speaker: (t.speaker === 'user' || t.speaker === 'agent') ? 'agent' as const : 'them' as const,
+  // Build transcript turns from ASR (them) and agent_speech events (our agent)
+  // 1. ASR transcriptions - what "them" said
+  const asrTurns = transcriptions.map(t => ({
+    speaker: 'them' as const,
     text: t.content,
     timestamp: t.created_at,
     confidence: t.confidence
   }))
+
+  // 2. Agent speech events - what our agent said (TTS text)
+  const agentSpeechEvents = callEvents.filter(e => e.event_type === 'agent_speech')
+  const agentTurns = agentSpeechEvents.map(e => ({
+    speaker: 'agent' as const,
+    text: e.description || '',
+    timestamp: e.created_at,
+    confidence: null as number | null
+  }))
+
+  // 3. Merge and sort chronologically
+  const transcriptTurns = [...asrTurns, ...agentTurns]
+    .filter(t => t.text && t.text.trim().length > 0)
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden w-full max-w-sm">
@@ -100,15 +115,21 @@ export default function CallCard() {
       </div>
 
       {/* Live Transcript for active calls */}
-      {currentCall.status === 'answered' && transcriptTurns.length > 0 && (
+      {currentCall.status === 'answered' && (
         <div className="px-4 py-3 border-b border-gray-100">
           <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
             Live Conversation
           </div>
-          <div className="max-h-32 overflow-y-auto">
-            <TranscriptView turns={transcriptTurns} maxHeight="120px" />
-            <div ref={transcriptEndRef} />
-          </div>
+          {transcriptTurns.length > 0 ? (
+            <div className="max-h-32 overflow-y-auto">
+              <TranscriptView turns={transcriptTurns} maxHeight="120px" />
+              <div ref={transcriptEndRef} />
+            </div>
+          ) : (
+            <div className="text-sm text-gray-400 italic">
+              Listening for conversation...
+            </div>
+          )}
         </div>
       )}
 
@@ -179,14 +200,28 @@ export default function CallCard() {
         </div>
       )}
 
-      {/* Ended state fallback (when callCardData not yet loaded) */}
+      {/* Ended state fallback (when callCardData not yet loaded) - show transcript while loading */}
       {currentCall.status === 'ended' && !callCardData && (
-        <div className="px-4 py-4 bg-gray-50 border-t border-gray-100">
-          <div className="flex items-center justify-center gap-2 text-gray-500">
-            <div className="w-4 h-4 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin" />
-            <span className="text-sm">Loading summary...</span>
+        <>
+          {/* Show transcript we captured during the call */}
+          {transcriptTurns.length > 0 && (
+            <div className="px-4 py-3 border-b border-gray-100">
+              <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+                Conversation
+              </div>
+              <div className="max-h-48 overflow-y-auto">
+                <TranscriptView turns={transcriptTurns} maxHeight="180px" />
+              </div>
+            </div>
+          )}
+          {/* Loading indicator for AI summary */}
+          <div className="px-4 py-3 bg-gray-50 border-t border-gray-100">
+            <div className="flex items-center gap-2 text-gray-500">
+              <div className="w-4 h-4 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin" />
+              <span className="text-sm">Generating summary...</span>
+            </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   )

@@ -60,17 +60,31 @@ export default function CallHistoryCard({ call }: CallHistoryCardProps) {
   const status = getStatus(call.outcome)
   const statusColors = STATUS_COLORS[status]
   const statusLabel = STATUS_LABELS[status]
-  const hasTranscripts = call.transcriptions && call.transcriptions.length > 0
 
-  // Convert to transcript turns
-  const transcriptTurns = hasTranscripts
-    ? call.transcriptions.map(t => ({
-        speaker: (t.speaker === 'user' || t.speaker === 'agent') ? 'agent' as const : 'them' as const,
-        text: t.content,
-        timestamp: t.created_at,
-        confidence: t.confidence
-      }))
-    : []
+  // Build transcript turns from ASR (them) and agent_speech events (agent)
+  // 1. ASR transcriptions - what "them" said
+  const asrTurns = (call.transcriptions || []).map(t => ({
+    speaker: 'them' as const,
+    text: t.content,
+    timestamp: t.created_at,
+    confidence: t.confidence
+  }))
+
+  // 2. Agent speech events - what our agent said (TTS text)
+  const agentSpeechEvents = (call.call_events || []).filter(e => e.event_type === 'agent_speech')
+  const agentTurns = agentSpeechEvents.map(e => ({
+    speaker: 'agent' as const,
+    text: e.description || '',
+    timestamp: e.created_at,
+    confidence: null as number | null
+  }))
+
+  // 3. Merge and sort chronologically
+  const transcriptTurns = [...asrTurns, ...agentTurns]
+    .filter(t => t.text && t.text.trim().length > 0)
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+
+  const hasTranscripts = transcriptTurns.length > 0
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">

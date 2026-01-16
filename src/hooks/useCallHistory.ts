@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
-import type { Call, Transcription } from '../lib/types'
+import type { Call, Transcription, CallEvent } from '../lib/types'
 
 export interface CallWithTranscripts extends Call {
   transcriptions: Transcription[]
+  call_events?: CallEvent[]
 }
 
 interface UseCallHistoryReturn {
@@ -23,23 +24,28 @@ export function useCallHistory(limit = 10): UseCallHistoryReturn {
       setIsLoading(true)
       setError(null)
 
-      // Fetch recent calls with their transcriptions
+      // Fetch recent calls with their transcriptions and call events (for agent speech)
       const { data: callsData, error: callsError } = await supabase
         .from('calls')
         .select(`
           *,
-          transcriptions (*)
+          transcriptions (*),
+          call_events (*)
         `)
         .order('created_at', { ascending: false })
         .limit(limit)
 
       if (callsError) throw callsError
 
-      // Sort transcriptions within each call by created_at
-      const callsWithSortedTranscripts = (callsData || []).map((call: Call & { transcriptions: Transcription[] }) => ({
+      // Sort transcriptions and call_events within each call by created_at
+      const callsWithSortedTranscripts = (callsData || []).map((call: Call & { transcriptions: Transcription[], call_events?: CallEvent[] }) => ({
         ...call,
         transcriptions: (call.transcriptions || []).sort(
           (a: Transcription, b: Transcription) =>
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        ),
+        call_events: (call.call_events || []).sort(
+          (a: CallEvent, b: CallEvent) =>
             new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
         )
       })) as CallWithTranscripts[]
