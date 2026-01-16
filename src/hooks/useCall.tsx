@@ -434,6 +434,23 @@ export function CallProvider({ children }: { children: ReactNode }) {
       console.log('[useCall] Access token (first 20 chars):', session.access_token?.substring(0, 20) + '...')
       console.log('[useCall] Token expires at:', session.expires_at ? new Date(session.expires_at * 1000).toISOString() : 'unknown')
       
+      // #region agent log - Hypothesis A,D: Check Supabase config
+      const envUrl = import.meta.env.VITE_SUPABASE_URL
+      const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+      fetch('http://127.0.0.1:7242/ingest/1c58ddf9-a044-4791-b751-6563effc4c78',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useCall.tsx:env-check',message:'Supabase env vars',data:{supabaseUrl:envUrl,anonKeyFirst20:envKey?.substring(0,20),anonKeyLast10:envKey?.substring(envKey.length-10)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,D'})}).catch(()=>{});
+      // #endregion
+      
+      // #region agent log - Hypothesis B,C: Check token details
+      const tokenParts = session.access_token?.split('.') || []
+      let tokenHeader = null
+      let tokenPayload = null
+      try {
+        tokenHeader = JSON.parse(atob(tokenParts[0] || ''))
+        tokenPayload = JSON.parse(atob(tokenParts[1] || ''))
+      } catch(e) { /* ignore */ }
+      fetch('http://127.0.0.1:7242/ingest/1c58ddf9-a044-4791-b751-6563effc4c78',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useCall.tsx:token-check',message:'JWT token details',data:{tokenHeader,tokenIss:tokenPayload?.iss,tokenAud:tokenPayload?.aud,tokenSub:tokenPayload?.sub,tokenRole:tokenPayload?.role},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B,C'})}).catch(()=>{});
+      // #endregion
+      
       // Check if token is expired and refresh if needed
       let currentToken = session.access_token
       if (session.expires_at && session.expires_at * 1000 < Date.now()) {

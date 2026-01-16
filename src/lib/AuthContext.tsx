@@ -20,6 +20,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
+      // #region agent log - Hypothesis B: Check session loaded from storage
+      const tokenParts = session?.access_token?.split('.') || []
+      let tokenPayload = null
+      try { tokenPayload = JSON.parse(atob(tokenParts[1] || '')) } catch(e) { /* ignore */ }
+      fetch('http://127.0.0.1:7242/ingest/1c58ddf9-a044-4791-b751-6563effc4c78',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuthContext.tsx:session-load',message:'Session loaded from storage',data:{hasSession:!!session,userId:session?.user?.id,tokenIss:tokenPayload?.iss,tokenAud:tokenPayload?.aud},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       setSession(session)
       setUser(session?.user ?? null)
       setLoading(false)
