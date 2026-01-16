@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { supabase } from '../lib/supabase'
-import type { Call, Transcription, CallEvent } from '../lib/types'
+import type { Call, Transcription, CallEvent, CallCardData } from '../lib/types'
 import { useAuth } from '../lib/AuthContext'
 
 interface CallContextType {
@@ -13,7 +13,8 @@ interface CallContextType {
   startCall: (phoneNumber: string, contextId?: string, purpose?: string, conversationId?: string | null) => Promise<void>
   hangUp: () => Promise<void>
   sendDtmf: (digits: string) => Promise<void>
-  lastSummary: string | null
+  callCardData: CallCardData | null  // Structured call card data after call ends
+  lastSummary: string | null  // Kept for backward compatibility
 }
 
 const CallContext = createContext<CallContextType | null>(null)
@@ -26,6 +27,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [callEvents, setCallEvents] = useState<CallEvent[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [callCardData, setCallCardData] = useState<CallCardData | null>(null)
   const [lastSummary, setLastSummary] = useState<string | null>(null)
 
   // Track if we've already requested a summary for this call
@@ -58,6 +60,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
                 body: { call_id: updatedCall.id },
               })
 
+              if (response.data?.callCardData) {
+                setCallCardData(response.data.callCardData)
+              }
               if (response.data?.summary) {
                 setLastSummary(response.data.summary)
               }
@@ -193,6 +198,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setError(null)
     setTranscriptions([])
     setCallEvents([])
+    setCallCardData(null)
     setLastSummary(null)
     setCallConversationId(conversationId ?? null)  // Track which conversation owns this call
     summaryRequestedRef.current = null
@@ -270,6 +276,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
         startCall,
         hangUp,
         sendDtmf,
+        callCardData,
         lastSummary,
       }}
     >

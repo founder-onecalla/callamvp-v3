@@ -62,6 +62,92 @@ export interface ChatFunction {
   arguments: Record<string, unknown>
 }
 
+// CallCard Data Contract
+export type CallCardStatus = 'in_progress' | 'completed' | 'no_answer' | 'busy' | 'failed' | 'voicemail' | 'canceled'
+export type ConfidenceLevel = 'high' | 'medium' | 'low'
+
+export interface CallCardTakeaway {
+  label: string
+  value: string
+  when?: string
+  confidence: ConfidenceLevel
+}
+
+export interface TranscriptTurn {
+  speaker: 'agent' | 'them'
+  text: string
+  timestamp: string
+  confidence: number | null
+}
+
+export interface TimelineEvent {
+  t: string
+  type: string
+  description: string
+}
+
+export interface CallCardData {
+  callId: string
+  contact: {
+    name: string | null
+    phone: string
+  }
+  createdAt: string
+  startedAt: string | null
+  connectedAt: string | null
+  endedAt: string | null
+  durationSec: number | null
+  status: CallCardStatus
+  endReason: {
+    label: string
+    code: string
+  } | null
+  goal: string | null
+  outcome: {
+    sentence: string
+    takeaways: CallCardTakeaway[]
+    confidence: ConfidenceLevel
+    warnings: string[]
+  } | null
+  transcript: {
+    turns: TranscriptTurn[]
+    hasFullTranscript: boolean
+  }
+  media: {
+    hasRecording: boolean
+    recordingUrl: string | null
+  }
+  debug: {
+    timeline: TimelineEvent[]
+    provider: {
+      name: string
+      callControlId: string | null
+    }
+    endReasonCode: string | null
+  }
+}
+
+// Status label and color mappings
+export const STATUS_LABELS: Record<CallCardStatus, string> = {
+  'in_progress': 'In progress',
+  'completed': 'Completed',
+  'no_answer': 'No answer',
+  'busy': 'Busy',
+  'failed': 'Failed',
+  'voicemail': 'Voicemail',
+  'canceled': 'Canceled'
+}
+
+export const STATUS_COLORS: Record<CallCardStatus, { bg: string; text: string; dot: string }> = {
+  'in_progress': { bg: 'bg-blue-100', text: 'text-blue-700', dot: 'bg-blue-500' },
+  'completed': { bg: 'bg-green-100', text: 'text-green-700', dot: 'bg-green-500' },
+  'no_answer': { bg: 'bg-orange-100', text: 'text-orange-700', dot: 'bg-orange-500' },
+  'busy': { bg: 'bg-orange-100', text: 'text-orange-700', dot: 'bg-orange-500' },
+  'failed': { bg: 'bg-red-100', text: 'text-red-700', dot: 'bg-red-500' },
+  'voicemail': { bg: 'bg-purple-100', text: 'text-purple-700', dot: 'bg-purple-500' },
+  'canceled': { bg: 'bg-gray-100', text: 'text-gray-700', dot: 'bg-gray-500' }
+}
+
 export interface Database {
   public: {
     Tables: {

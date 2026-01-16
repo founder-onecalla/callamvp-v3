@@ -1,25 +1,40 @@
 import { useState } from 'react'
 import type { CallWithTranscripts } from '../../hooks/useCallHistory'
+import { STATUS_COLORS } from '../../lib/types'
+import TranscriptView from './TranscriptView'
 
 interface CallHistoryCardProps {
   call: CallWithTranscripts
 }
 
-const outcomeConfig: Record<string, { label: string; color: string; icon: string }> = {
-  completed: { label: 'Completed', color: 'text-green-600', icon: '✓' },
-  voicemail: { label: 'Voicemail', color: 'text-orange-500', icon: '📫' },
-  busy: { label: 'Busy', color: 'text-yellow-600', icon: '🔄' },
-  no_answer: { label: 'No Answer', color: 'text-gray-500', icon: '📵' },
-  declined: { label: 'Declined', color: 'text-red-500', icon: '✕' },
-  cancelled: { label: 'Cancelled', color: 'text-gray-400', icon: '⊘' },
-  default: { label: 'Ended', color: 'text-gray-500', icon: '📞' },
+// Map DB outcome to our status type
+function getStatus(outcome: string | null | undefined): 'completed' | 'voicemail' | 'busy' | 'no_answer' | 'failed' | 'canceled' {
+  switch (outcome) {
+    case 'completed': return 'completed'
+    case 'voicemail': return 'voicemail'
+    case 'busy': return 'busy'
+    case 'no_answer': return 'no_answer'
+    case 'declined':
+    case 'failed': return 'failed'
+    case 'cancelled': return 'canceled'
+    default: return 'completed'
+  }
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  completed: 'Completed',
+  voicemail: 'Voicemail',
+  busy: 'Busy',
+  no_answer: 'No answer',
+  failed: 'Failed',
+  canceled: 'Canceled',
 }
 
 function formatDuration(seconds: number | null | undefined): string {
-  if (!seconds) return '0:00'
+  if (!seconds) return '--:--'
   const mins = Math.floor(seconds / 60)
   const secs = seconds % 60
-  return `${mins}:${secs.toString().padStart(2, '0')}`
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 }
 
 function formatTime(dateString: string): string {
@@ -42,12 +57,24 @@ function formatTime(dateString: string): string {
 export default function CallHistoryCard({ call }: CallHistoryCardProps) {
   const [isExpanded, setIsExpanded] = useState(false)
 
-  const outcome = outcomeConfig[call.outcome || ''] || outcomeConfig.default
+  const status = getStatus(call.outcome)
+  const statusColors = STATUS_COLORS[status]
+  const statusLabel = STATUS_LABELS[status]
   const hasTranscripts = call.transcriptions && call.transcriptions.length > 0
+
+  // Convert to transcript turns
+  const transcriptTurns = hasTranscripts
+    ? call.transcriptions.map(t => ({
+        speaker: (t.speaker === 'user' || t.speaker === 'agent') ? 'agent' as const : 'them' as const,
+        text: t.content,
+        timestamp: t.created_at,
+        confidence: t.confidence
+      }))
+    : []
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      {/* Header - Clickable to expand */}
+      {/* Header */}
       <div
         className={`px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors ${
           hasTranscripts ? '' : 'opacity-75'
@@ -55,70 +82,67 @@ export default function CallHistoryCard({ call }: CallHistoryCardProps) {
         onClick={() => hasTranscripts && setIsExpanded(!isExpanded)}
       >
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="text-lg">{outcome.icon}</span>
-            <div>
-              <p className="font-medium text-gray-900 text-sm">{call.phone_number}</p>
-              <div className="flex items-center gap-2 text-xs text-gray-500">
-                <span className={outcome.color}>{outcome.label}</span>
-                <span>•</span>
-                <span>{formatDuration(call.duration_seconds)}</span>
-                <span>•</span>
-                <span>{formatTime(call.created_at)}</span>
-              </div>
-            </div>
+          <div className="flex items-center gap-3 min-w-0">
+            {/* Status pill */}
+            <span className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${statusColors.bg} ${statusColors.text}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${statusColors.dot}`} />
+              {statusLabel}
+            </span>
+
+            {/* Phone number */}
+            <span className="text-sm font-medium text-gray-900 truncate">
+              {call.phone_number}
+            </span>
           </div>
-          {hasTranscripts && (
-            <svg
-              className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-          )}
+
+          <div className="flex items-center gap-3 text-sm text-gray-500 flex-shrink-0">
+            {call.duration_seconds && call.duration_seconds > 0 && (
+              <span className="font-mono">{formatDuration(call.duration_seconds)}</span>
+            )}
+            <span>{formatTime(call.created_at)}</span>
+            {hasTranscripts && (
+              <svg
+                className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            )}
+          </div>
         </div>
 
-        {/* Summary if available */}
+        {/* Summary preview if available */}
         {call.summary && !isExpanded && (
-          <p className="text-xs text-gray-500 mt-2 line-clamp-2">{call.summary}</p>
+          <p className="text-sm text-gray-600 mt-2 line-clamp-2 leading-relaxed">{call.summary}</p>
         )}
       </div>
 
-      {/* Expanded transcript view */}
+      {/* Expanded view */}
       {isExpanded && hasTranscripts && (
-        <div className="px-4 py-3 border-t border-gray-100 bg-gray-50 max-h-64 overflow-y-auto">
-          <p className="text-xs text-gray-400 uppercase tracking-wide font-medium mb-2">Transcript</p>
-          <div className="space-y-2">
-            {call.transcriptions.map((t) => (
-              <div key={t.id} className="text-sm">
-                <span
-                  className={`font-medium ${
-                    t.speaker === 'agent' ? 'text-blue-500' : 'text-gray-600'
-                  }`}
-                >
-                  {t.speaker === 'agent' ? 'AI' : 'Them'}:
-                </span>{' '}
-                <span className="text-gray-700">{t.content}</span>
-              </div>
-            ))}
-          </div>
-
-          {/* Full summary if available */}
+        <div className="px-4 py-3 border-t border-gray-100 bg-gray-50">
+          {/* Summary */}
           {call.summary && (
-            <div className="mt-3 pt-3 border-t border-gray-200">
-              <p className="text-xs text-gray-400 uppercase tracking-wide font-medium mb-1">Summary</p>
-              <p className="text-sm text-gray-600">{call.summary}</p>
+            <div className="mb-3 pb-3 border-b border-gray-200">
+              <p className="text-sm text-gray-700 leading-relaxed">{call.summary}</p>
             </div>
           )}
+
+          {/* Transcript */}
+          <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+            Conversation
+          </div>
+          <div className="bg-white rounded-lg p-3 border border-gray-100">
+            <TranscriptView turns={transcriptTurns} maxHeight="200px" />
+          </div>
         </div>
       )}
 
       {/* No transcript message */}
       {!hasTranscripts && (
         <div className="px-4 py-2 border-t border-gray-100 bg-gray-50">
-          <p className="text-xs text-gray-400 italic">
+          <p className="text-xs text-gray-400">
             {call.outcome === 'voicemail' ? 'Reached voicemail' : 'No transcript available'}
           </p>
         </div>

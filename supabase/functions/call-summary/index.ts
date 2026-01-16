@@ -6,6 +6,68 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// End reason code to user-friendly label mapping
+const END_REASON_LABELS: Record<string, string> = {
+  'MUTUAL_GOODBYE': 'Ended normally',
+  'USER_HUNG_UP': 'They hung up',
+  'SILENCE_TIMEOUT_AFTER_CLOSING': 'Ended after no response',
+  'normal_clearing': 'Ended normally',
+  'normal': 'Ended normally',
+  'no_answer': 'No answer',
+  'busy': 'Line busy',
+  'call_rejected': 'Call declined',
+  'originator_cancel': 'Call cancelled',
+}
+
+// Map database outcome to UI status
+function mapOutcomeToStatus(outcome: string | null, wasAnswered: boolean): string {
+  if (!outcome) {
+    return wasAnswered ? 'completed' : 'failed'
+  }
+  switch (outcome) {
+    case 'completed': return 'completed'
+    case 'voicemail': return 'voicemail'
+    case 'busy': return 'busy'
+    case 'no_answer': return 'no_answer'
+    case 'declined': return 'failed'
+    case 'cancelled': return 'canceled'
+    default: return wasAnswered ? 'completed' : 'failed'
+  }
+}
+
+// Get user-friendly end reason label
+function getEndReasonLabel(code: string | null): string {
+  if (!code) return 'Call ended'
+  return END_REASON_LABELS[code] || 'Call ended'
+}
+
+// Compute transcript confidence
+function computeConfidence(transcriptions: Array<{ confidence: number | null }>): 'high' | 'medium' | 'low' {
+  if (!transcriptions || transcriptions.length === 0) return 'low'
+
+  const confidences = transcriptions
+    .filter(t => t.confidence !== null)
+    .map(t => t.confidence as number)
+
+  if (confidences.length === 0) return 'medium'
+
+  const avg = confidences.reduce((a, b) => a + b, 0) / confidences.length
+
+  if (avg >= 0.85) return 'high'
+  if (avg >= 0.65) return 'medium'
+  return 'low'
+}
+
+interface AIExtraction {
+  sentence: string
+  takeaways: Array<{
+    label: string
+    value: string
+    when?: string
+    confidence: 'high' | 'medium' | 'low'
+  }>
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -48,133 +110,218 @@ serve(async (req) => {
 
     const call = callResult.data
     const context = contextResult.data
-    const transcriptions = transcriptionsResult.data
-    const events = eventsResult.data
+    const transcriptions = transcriptionsResult.data || []
+    const events = eventsResult.data || []
 
     if (callResult.error || !call) {
       throw new Error('Call not found')
     }
 
     // Calculate call duration
-    let duration = 0
+    let durationSec: number | null = null
     if (call.started_at && call.ended_at) {
-      duration = Math.round((new Date(call.ended_at).getTime() - new Date(call.started_at).getTime()) / 1000)
+      durationSec = Math.round((new Date(call.ended_at).getTime() - new Date(call.started_at).getTime()) / 1000)
     }
 
-    // Build context for GPT
     const wasAnswered = call.status === 'ended' && call.started_at !== null
-    const hasTranscriptions = transcriptions && transcriptions.length > 0
+    const hasTranscriptions = transcriptions.length > 0
 
-    let transcriptText = 'No transcription available.'
-    if (hasTranscriptions) {
-      transcriptText = transcriptions
-        .map(t => `${t.speaker === 'user' ? 'You' : 'Them'}: ${t.content}`)
+    // Build transcript turns
+    const transcriptTurns = transcriptions.map(t => ({
+      speaker: (t.speaker === 'user' || t.speaker === 'agent') ? 'agent' as const : 'them' as const,
+      text: t.content,
+      timestamp: t.created_at,
+      confidence: t.confidence
+    }))
+
+    // Build debug timeline from events
+    const debugTimeline = events.map(e => ({
+      t: e.created_at,
+      type: e.event_type,
+      description: e.description || ''
+    }))
+
+    // Find the end reason from hangup event
+    const hangupEvent = events.find(e => e.event_type === 'hangup')
+    const endReasonCode = hangupEvent?.metadata?.reason as string || call.outcome || null
+
+    // Get goal from call context
+    const goal = context?.intent_purpose || null
+
+    // Generate AI-powered outcome using GPT
+    const openaiKey = Deno.env.get('OPENAI_API_KEY')
+    let aiExtraction: AIExtraction | null = null
+
+    if (openaiKey && hasTranscriptions) {
+      const transcriptText = transcriptions
+        .map(t => `${t.speaker === 'user' || t.speaker === 'agent' ? 'OneCalla' : 'Them'}: ${t.content}`)
         .join('\n')
+
+      const systemPrompt = `You are analyzing a phone call transcript for OneCalla, a phone calling assistant.
+
+Extract two things:
+1. A one-sentence summary of what happened (conversational, like telling a friend)
+2. Key takeaways as structured data (max 3 items)
+
+CRITICAL RULES:
+- ONLY use information explicitly in the transcript
+- NEVER invent details not present
+- If nothing notable was learned, return an empty takeaways array
+- Be specific with values extracted (times, dates, names, amounts)
+
+Respond with JSON only:
+{
+  "sentence": "One sentence summary here",
+  "takeaways": [
+    {
+      "label": "What this info is about",
+      "value": "The extracted value",
+      "when": "Time qualifier if applicable (optional)",
+      "confidence": "high" | "medium" | "low"
     }
+  ]
+}
 
-    let eventsText = ''
-    if (events && events.length > 0) {
-      eventsText = events.map(e => `- ${e.event_type}: ${e.description || ''}`).join('\n')
-    }
+Confidence rules:
+- high: Clear, unambiguous statement
+- medium: Has hedges ("around", "about", "maybe") or partial info
+- low: Unclear, conflicting info, or low audio quality indicated`
 
-    const contextInfo = context ? `
-Call Purpose: ${context.intent_purpose || 'General call'}
-Company: ${context.company_name || 'Unknown'}
-Category: ${context.intent_category || 'Unknown'}
-User's Goal: ${JSON.stringify(context.gathered_info || {})}
-` : 'No pre-call context available.'
+      const userPrompt = `Call purpose: ${goal || 'General call'}
 
-    const systemPrompt = `You are generating a post-call summary for OneCalla, a phone calling assistant.
-
-## CRITICAL: ONLY STATE FACTS FROM THE DATA PROVIDED
-- ONLY report what is explicitly in the transcript or call events
-- If there is no transcript, you can ONLY state basic facts: connected/didn't connect, duration, outcome
-- NEVER invent names, conversations, or outcomes that aren't in the data
-- If you don't know what was discussed, say "Call connected but no transcript was captured" or similar
-- NEVER claim a voicemail was left unless the transcript shows it
-
-Your summary should:
-- Be conversational and natural, like a friend telling them what happened
-- Be concise (2-4 sentences typically, maybe more if a lot happened)
-- Focus on what matters: did it connect? what was discussed? was the goal achieved?
-- Include specific details mentioned (names, times, amounts, next steps) ONLY if they appear in the transcript
-- Adapt tone to the call type (casual for personal, more detailed for business)
-
-DO NOT:
-- Use bullet points or formal formatting
-- Start with "Here's your summary" or similar
-- EVER make up details that aren't in the provided data
-- Claim things happened if there's no transcript evidence
-
-Examples of good summaries WITH transcript:
-- "Got through to Xfinity. Spoke with Marcus who confirmed your internet will be back by tomorrow morning. He credited $15 to your account for the outage."
-- "Booked! Table for 4 at 7pm Saturday. They said to text if you're running late."
-
-Examples of good summaries WITHOUT transcript:
-- "Call connected for 45 seconds but the transcript wasn't captured. You may want to try again."
-- "Called but couldn't connect - the line was busy."
-- "Call ended after 2 seconds. There may have been a technical issue."`
-
-    const userPrompt = `Generate a post-call summary based on this information:
-
-CALL STATUS:
-- Phone number: ${call.phone_number}
-- Answered: ${wasAnswered ? 'Yes' : 'No'}
-- Duration: ${duration > 0 ? `${Math.floor(duration / 60)}:${(duration % 60).toString().padStart(2, '0')}` : 'Did not connect'}
-- Outcome: ${call.outcome || 'unknown'}
-
-CONTEXT:
-${contextInfo}
-
-CALL EVENTS:
-${eventsText || 'No events recorded'}
-
-TRANSCRIPT (${hasTranscriptions ? transcriptions.length + ' messages' : 'NONE - no transcript captured'}):
+Transcript:
 ${transcriptText}
 
-IMPORTANT: ${hasTranscriptions ? 'Use the transcript above to describe what happened.' : 'There is NO transcript. Only state basic facts about whether the call connected and how long it lasted. Do NOT invent any conversation details.'}
+Extract the summary and any key takeaways from this call.`
 
-Write a natural, conversational summary of what happened on this call.`
+      try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openaiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ],
+            temperature: 0.3,
+            max_tokens: 500,
+            response_format: { type: 'json_object' }
+          }),
+        })
 
-    const openaiKey = Deno.env.get('OPENAI_API_KEY')
-    if (!openaiKey) {
-      throw new Error('OpenAI API key not configured')
+        if (response.ok) {
+          const data = await response.json()
+          aiExtraction = JSON.parse(data.choices[0].message.content)
+        }
+      } catch (aiError) {
+        console.error('AI extraction error:', aiError)
+      }
     }
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${openaiKey}`,
-        'Content-Type': 'application/json',
+    // Build outcome object
+    let outcome = null
+    const status = mapOutcomeToStatus(call.outcome, wasAnswered)
+
+    if (wasAnswered) {
+      // Generate fallback sentence if AI failed
+      let sentence = aiExtraction?.sentence || ''
+      if (!sentence) {
+        if (hasTranscriptions) {
+          sentence = `Call connected for ${formatDuration(durationSec)}.`
+        } else {
+          sentence = `Call connected for ${formatDuration(durationSec)} but transcript wasn't captured.`
+        }
+      }
+
+      outcome = {
+        sentence,
+        takeaways: aiExtraction?.takeaways || [],
+        confidence: computeConfidence(transcriptions),
+        warnings: [] as string[]
+      }
+
+      // Add warning if low confidence
+      if (outcome.confidence === 'low') {
+        outcome.warnings.push('Some details may be uncertain. Check the transcript.')
+      }
+    } else {
+      // Call didn't connect
+      const statusMessages: Record<string, string> = {
+        'no_answer': `No answer from ${call.phone_number}.`,
+        'busy': `Line was busy.`,
+        'voicemail': `Reached voicemail.`,
+        'failed': `Call couldn't connect.`,
+        'canceled': `Call was cancelled.`
+      }
+      outcome = {
+        sentence: statusMessages[status] || `Call to ${call.phone_number} didn't connect.`,
+        takeaways: [],
+        confidence: 'high' as const,
+        warnings: []
+      }
+    }
+
+    // Build the full CallCardData object
+    const callCardData = {
+      callId: call.id,
+      contact: {
+        name: context?.company_name || null,
+        phone: call.phone_number
       },
-      body: JSON.stringify({
-        model: 'gpt-4o', // Faster than gpt-4-turbo
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        temperature: 0.7,
-        max_tokens: 300,
-      }),
-    })
-
-    if (!response.ok) {
-      const error = await response.text()
-      throw new Error(`OpenAI API error: ${error}`)
+      createdAt: call.created_at,
+      startedAt: call.started_at,
+      connectedAt: call.started_at, // In our model, started_at is when connected
+      endedAt: call.ended_at,
+      durationSec,
+      status,
+      endReason: endReasonCode ? {
+        label: getEndReasonLabel(endReasonCode),
+        code: endReasonCode
+      } : null,
+      goal,
+      outcome,
+      transcript: {
+        turns: transcriptTurns,
+        hasFullTranscript: hasTranscriptions
+      },
+      media: {
+        hasRecording: false, // We don't have recording yet
+        recordingUrl: null
+      },
+      debug: {
+        timeline: debugTimeline,
+        provider: {
+          name: 'Telnyx',
+          callControlId: call.telnyx_call_id
+        },
+        endReasonCode
+      }
     }
 
-    const data = await response.json()
-    const summary = data.choices[0].message.content
+    // Store the summary as an assistant message (for backward compatibility)
+    if (outcome?.sentence) {
+      await serviceClient.from('messages').insert({
+        user_id: user.id,
+        role: 'assistant',
+        content: outcome.sentence,
+        call_id: call_id,
+      })
+    }
 
-    // Store the summary as an assistant message
-    await serviceClient.from('messages').insert({
-      user_id: user.id,
-      role: 'assistant',
-      content: summary,
-      call_id: call_id,
-    })
+    // Also update the call record with the summary
+    await serviceClient.from('calls').update({
+      summary: outcome?.sentence || null
+    }).eq('id', call_id)
 
-    return new Response(JSON.stringify({ summary }), {
+    return new Response(JSON.stringify({
+      callCardData,
+      // Keep summary for backward compatibility
+      summary: outcome?.sentence
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
 
@@ -186,3 +333,12 @@ Write a natural, conversational summary of what happened on this call.`
     })
   }
 })
+
+function formatDuration(seconds: number | null): string {
+  if (!seconds || seconds < 1) return 'a few seconds'
+  if (seconds < 60) return `${seconds} seconds`
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  if (secs === 0) return `${mins} minute${mins !== 1 ? 's' : ''}`
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
