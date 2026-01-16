@@ -32,13 +32,34 @@ export function useChat(): UseChatReturn {
         // Include context_id if one was created during info gathering
         const contextId = args.context_id as string || callContextRef.current
         const purpose = args.purpose as string | undefined
+        const phoneNumber = args.phone_number as string
+        
+        console.log('[useChat] place_call triggered:', { phoneNumber, contextId, purpose, conversationId })
+        
+        if (!phoneNumber) {
+          console.error('[useChat] place_call: No phone number provided!')
+          return `Cannot place call - no phone number provided.`
+        }
+        
         try {
-          await startCall(args.phone_number as string, contextId || undefined, purpose, conversationId)
+          console.log('[useChat] Calling startCall...')
+          await startCall(phoneNumber, contextId || undefined, purpose, conversationId)
+          console.log('[useChat] startCall succeeded!')
           callContextRef.current = null // Reset after call starts
-          return `Placing call to ${args.phone_number}...`
+          return `Placing call to ${phoneNumber}...`
         } catch (err) {
-          console.error('place_call failed:', err)
+          console.error('[useChat] place_call FAILED:', err)
+          console.error('[useChat] Error details:', {
+            name: (err as Error)?.name,
+            message: (err as Error)?.message,
+            stack: (err as Error)?.stack?.split('\n').slice(0, 5)
+          })
           callContextRef.current = null
+          // Return the actual error message if available
+          const errorMessage = (err as Error)?.message
+          if (errorMessage && !errorMessage.includes('Unable to start call')) {
+            return `Failed to place call: ${errorMessage}`
+          }
           return `Failed to place call. Please try again.`
         }
       }

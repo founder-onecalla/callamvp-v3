@@ -408,10 +408,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
   }, [currentCall])
 
   const startCall = useCallback(async (phoneNumber: string, contextId?: string, purpose?: string, conversationId?: string | null) => {
+    console.log('[useCall] startCall called with:', { phoneNumber, contextId, purpose, conversationId })
+    
     if (!session?.access_token) {
+      console.error('[useCall] Not authenticated - no access token')
       setError('Not authenticated')
-      return
+      throw new Error('Not authenticated')
     }
+    
+    console.log('[useCall] Session valid, access_token exists')
 
     setIsLoading(true)
     setError(null)
@@ -423,7 +428,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
     stopPolling()
 
     try {
-      console.log('[useCall] Starting call to:', phoneNumber)
+      console.log('[useCall] Invoking call-start edge function...')
+      console.log('[useCall] Phone number:', phoneNumber)
+      console.log('[useCall] Purpose:', purpose)
       
       const response = await supabase.functions.invoke('call-start', {
         body: {
@@ -433,7 +440,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
         },
       })
 
-      console.log('[useCall] Call start response:', response)
+      console.log('[useCall] call-start response received:', JSON.stringify(response, null, 2))
 
       if (response.error) {
         console.error('[useCall] Call start API error:', response.error)
