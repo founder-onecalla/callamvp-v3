@@ -432,13 +432,20 @@ export function CallProvider({ children }: { children: ReactNode }) {
       console.log('[useCall] Phone number:', phoneNumber)
       console.log('[useCall] Purpose:', purpose)
       
-      const response = await supabase.functions.invoke('call-start', {
+      // Wrap in timeout to catch hanging requests
+      const invokePromise = supabase.functions.invoke('call-start', {
         body: {
           phone_number: phoneNumber,
           context_id: contextId,
           purpose: purpose,
         },
       })
+      
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Request timed out after 30 seconds')), 30000)
+      })
+      
+      const response = await Promise.race([invokePromise, timeoutPromise]) as Awaited<typeof invokePromise>
 
       console.log('[useCall] call-start response received:', JSON.stringify(response, null, 2))
 
