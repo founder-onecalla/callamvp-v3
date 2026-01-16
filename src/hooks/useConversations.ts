@@ -20,7 +20,7 @@ export function useConversations(): UseConversationsReturn {
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
-  // Fetch conversations on mount
+  // Fetch conversations on mount and when user changes
   useEffect(() => {
     if (!user) {
       setConversations([])

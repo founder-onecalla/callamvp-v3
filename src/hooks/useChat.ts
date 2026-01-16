@@ -54,9 +54,15 @@ export function useChat(): UseChatReturn {
         // Include context_id if one was created during info gathering
         const contextId = args.context_id as string || callContextRef.current
         const purpose = args.purpose as string | undefined
-        await startCall(args.phone_number as string, contextId || undefined, purpose, conversationId)
-        callContextRef.current = null // Reset after call starts
-        return `Initiating call to ${args.phone_number}...`
+        try {
+          await startCall(args.phone_number as string, contextId || undefined, purpose, conversationId)
+          callContextRef.current = null // Reset after call starts
+          return `Placing call to ${args.phone_number}...`
+        } catch (err) {
+          console.error('place_call failed:', err)
+          callContextRef.current = null
+          return `Failed to place call. Please try again.`
+        }
       }
       case 'hang_up_call':
         await hangUp()

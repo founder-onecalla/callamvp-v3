@@ -167,8 +167,12 @@ async function triggerVoiceAgent(
   transcription?: string,
   isOpening = false
 ) {
+  const url = `${supabaseUrl}/functions/v1/voice-agent`
+  console.log('[webhook] triggerVoiceAgent: Calling', url)
+  console.log('[webhook] triggerVoiceAgent: call_id:', callId, 'isOpening:', isOpening)
+
   try {
-    const response = await fetch(`${supabaseUrl}/functions/v1/voice-agent`, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${serviceRoleKey}`,
@@ -181,14 +185,20 @@ async function triggerVoiceAgent(
       }),
     })
 
+    const responseText = await response.text()
+    console.log('[webhook] triggerVoiceAgent: Response status:', response.status)
+    console.log('[webhook] triggerVoiceAgent: Response body:', responseText.substring(0, 500))
+
     if (!response.ok) {
-      const error = await response.text()
-      console.error('[webhook] Voice agent error:', error)
-    } else {
-      console.log('[webhook] Voice agent triggered successfully')
+      console.error('[webhook] triggerVoiceAgent: FAILED with status', response.status)
+      throw new Error(`Voice agent returned ${response.status}: ${responseText}`)
     }
+
+    console.log('[webhook] triggerVoiceAgent: SUCCESS')
+    return JSON.parse(responseText)
   } catch (error) {
-    console.error('[webhook] Failed to trigger voice agent:', error)
+    console.error('[webhook] triggerVoiceAgent: ERROR:', error)
+    throw error
   }
 }
 
@@ -232,16 +242,35 @@ async function startTranscription(
 }
 
 serve(async (req) => {
+  // Log EVERY request to this function
+  console.log('[webhook-telnyx] ========== REQUEST RECEIVED ==========')
+  console.log('[webhook-telnyx] Method:', req.method)
+  console.log('[webhook-telnyx] URL:', req.url)
+
   if (req.method === 'OPTIONS') {
+    console.log('[webhook-telnyx] Responding to OPTIONS preflight')
     return new Response('ok', { headers: corsHeaders })
   }
 
-  try {
-    const body = await req.json()
-    const event = body.data
-    const eventType = event.event_type
+  // Simple health check for GET requests
+  if (req.method === 'GET') {
+    console.log('[webhook-telnyx] Health check - responding OK')
+    return new Response(JSON.stringify({ status: 'ok', message: 'Webhook is accessible' }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    })
+  }
 
-    console.log('Telnyx webhook received:', eventType)
+  try {
+    const rawBody = await req.text()
+    console.log('[webhook-telnyx] Raw body length:', rawBody.length)
+    console.log('[webhook-telnyx] Raw body preview:', rawBody.substring(0, 500))
+
+    const body = JSON.parse(rawBody)
+    const event = body.data
+    const eventType = event?.event_type
+
+    console.log('[webhook-telnyx] ========== TELNYX EVENT ==========')
+    console.log('[webhook-telnyx] Event type:', eventType)
 
     const serviceClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
@@ -368,22 +397,36 @@ serve(async (req) => {
           }
         } else {
           // Legacy mode: Telnyx transcription + voice-agent function
-          console.log('[webhook] Using LEGACY mode (audio bridge disabled)')
+          console.log('[webhook] ========== CALL ANSWERED - LEGACY MODE ==========')
+          console.log('[webhook] call_id:', callId)
           console.log('[webhook] call_control_id:', event.payload.call_control_id)
 
           if (telnyxApiKey && callId) {
             console.log('[webhook] Starting transcription...')
             await startTranscription(event.payload.call_control_id, telnyxApiKey, callId, serviceClient)
-            console.log('[webhook] Transcription started')
+            console.log('[webhook] Transcription start command sent')
+          } else {
+            console.error('[webhook] Cannot start transcription - missing telnyxApiKey or callId')
           }
 
           // Trigger voice agent opening greeting immediately
-          // Don't wait for AMD - speak right away so the user hears something
           const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
           const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-          console.log('[webhook] Triggering voice agent opening greeting for call:', callId)
-          const voiceAgentResult = await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, true)
-          console.log('[webhook] Voice agent trigger completed')
+
+          console.log('[webhook] Supabase URL:', supabaseUrl ? 'present' : 'MISSING')
+          console.log('[webhook] Service role key:', serviceRoleKey ? 'present' : 'MISSING')
+
+          if (!supabaseUrl || !serviceRoleKey) {
+            console.error('[webhook] ERROR: Cannot trigger voice agent - missing credentials!')
+          } else {
+            console.log('[webhook] Triggering voice agent opening greeting for call:', callId)
+            try {
+              await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, true)
+              console.log('[webhook] Voice agent trigger completed successfully')
+            } catch (voiceErr) {
+              console.error('[webhook] Voice agent trigger FAILED:', voiceErr)
+            }
+          }
 
           // Start media streaming for Listen In feature (legacy audio relay)
           if (audioRelayUrl && telnyxApiKey) {

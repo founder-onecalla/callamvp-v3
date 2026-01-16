@@ -70,9 +70,10 @@ export default function CallCard() {
     callId: currentCall?.id ?? null,
   })
 
-  // Duration timer
+  // Duration timer - reset when not answered, increment when answered
   useEffect(() => {
     if (currentCall?.status !== 'answered') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset is intentional on status change
       setDuration(0)
       return
     }

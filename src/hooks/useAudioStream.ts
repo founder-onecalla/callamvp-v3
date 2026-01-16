@@ -35,7 +35,7 @@ export function useAudioStream({ relayUrl, callId }: UseAudioStreamOptions): Use
     const samples = new Float32Array(bytes.length)
 
     for (let i = 0; i < bytes.length; i++) {
-      let mulaw = ~bytes[i] & 0xFF
+      const mulaw = ~bytes[i] & 0xFF
       const sign = mulaw & 0x80
       const exponent = (mulaw >> 4) & 0x07
       const mantissa = mulaw & 0x0F

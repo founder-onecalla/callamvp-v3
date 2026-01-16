@@ -38,156 +38,224 @@ function formatTimestamp(timestamp: string | null): string {
   })
 }
 
-// Extract structured mentions from transcript
-interface ExtractedMention {
-  type: 'time' | 'relative_time' | 'money' | 'number'
-  value: string
-  context: string // surrounding words for evidence
+// ============================================================================
+// DETERMINISTIC TRANSCRIPT-GROUNDED BASIC RECAP
+// This MUST be grounded in the transcript and NEVER invent uncertainty
+// ============================================================================
+
+interface ExtractedInfo {
+  times: { value: string; normalized: string; context: string }[]
+  dates: { value: string; context: string }[]
+  amounts: { value: string; context: string }[]
+  confirmations: string[] // Direct quotes of confirmations
 }
 
-function extractMentions(turns: TranscriptTurn[]): ExtractedMention[] {
-  const mentions: ExtractedMention[] = []
-  const seen = new Set<string>()
-
-  // Only look at what "them" said (the other party)
-  const theirTurns = turns.filter(t => t.speaker === 'them')
-
-  for (const turn of theirTurns) {
-    const text = turn.text
-
-    // Time patterns (e.g., "2 pm", "7:30", "around 5")
-    const timeRegex = /(.{0,20})\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM|a\.m\.|p\.m\.)?)\b(.{0,20})/g
-    let match
-    while ((match = timeRegex.exec(text)) !== null) {
-      const value = match[2].trim()
-      if (!seen.has(value.toLowerCase())) {
-        seen.add(value.toLowerCase())
-        mentions.push({
-          type: 'time',
-          value,
-          context: (match[1] + match[2] + match[3]).trim()
-        })
-      }
-    }
-
-    // Relative time (e.g., "tomorrow", "next week")
-    const relativeRegex = /(.{0,15})\b(tomorrow|today|tonight|next\s+\w+|in\s+\d+\s+(?:minutes?|hours?|days?))\b(.{0,15})/gi
-    while ((match = relativeRegex.exec(text)) !== null) {
-      const value = match[2].trim()
-      if (!seen.has(value.toLowerCase())) {
-        seen.add(value.toLowerCase())
-        mentions.push({
-          type: 'relative_time',
-          value,
-          context: (match[1] + match[2] + match[3]).trim()
-        })
-      }
-    }
-
-    // Money (e.g., "$50", "$100.00")
-    const moneyRegex = /(.{0,15})(\$\d+(?:\.\d{2})?)(.{0,15})/g
-    while ((match = moneyRegex.exec(text)) !== null) {
-      const value = match[2]
-      if (!seen.has(value)) {
-        seen.add(value)
-        mentions.push({
-          type: 'money',
-          value,
-          context: (match[1] + match[2] + match[3]).trim()
-        })
-      }
-    }
+/**
+ * Extract explicit information from transcript.
+ * Only extracts what is CLEARLY stated - no inference.
+ */
+function extractFromTranscript(turns: TranscriptTurn[]): ExtractedInfo {
+  const result: ExtractedInfo = {
+    times: [],
+    dates: [],
+    amounts: [],
+    confirmations: []
   }
 
-  return mentions.slice(0, 3) // Max 3 mentions
+  // Only look at what "them" said (the other party's responses)
+  const theirTurns = turns.filter(t => t.speaker === 'them')
+  const fullText = theirTurns.map(t => t.text).join(' ')
+
+  // Time extraction - be EXACT
+  // Matches: "1:00 p.m.", "1 pm", "7:30", "around 5", "by 1:00"
+  const timeRegex = /\b(?:around\s+|by\s+|at\s+)?(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?|AM|PM)?\b/gi
+  let match
+  while ((match = timeRegex.exec(fullText)) !== null) {
+    const hour = match[1]
+    const minutes = match[2] || '00'
+    const period = match[3]?.toLowerCase().replace(/\./g, '') || ''
+
+    // Skip if it's clearly not a time (like "1" by itself with no context)
+    if (!period && !match[2] && !fullText.slice(Math.max(0, match.index - 10), match.index).match(/at|around|by/i)) {
+      continue
+    }
+
+    // Normalize the time
+    let normalized = `${hour}:${minutes}`
+    if (period) {
+      normalized += ` ${period}`
+    }
+
+    // Get surrounding context (20 chars before and after)
+    const start = Math.max(0, match.index - 20)
+    const end = Math.min(fullText.length, match.index + match[0].length + 20)
+    const context = fullText.slice(start, end).trim()
+
+    result.times.push({
+      value: match[0].trim(),
+      normalized,
+      context
+    })
+  }
+
+  // Date/day extraction
+  const dayRegex = /\b(today|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+\w+)\b/gi
+  while ((match = dayRegex.exec(fullText)) !== null) {
+    const start = Math.max(0, match.index - 15)
+    const end = Math.min(fullText.length, match.index + match[0].length + 15)
+    result.dates.push({
+      value: match[1],
+      context: fullText.slice(start, end).trim()
+    })
+  }
+
+  // Money extraction
+  const moneyRegex = /(\$\d+(?:\.\d{2})?)/g
+  while ((match = moneyRegex.exec(fullText)) !== null) {
+    const start = Math.max(0, match.index - 15)
+    const end = Math.min(fullText.length, match.index + match[0].length + 15)
+    result.amounts.push({
+      value: match[1],
+      context: fullText.slice(start, end).trim()
+    })
+  }
+
+  // Look for confirmations/acknowledgments
+  const confirmRegex = /\b(yes|yeah|sure|okay|ok|that's right|correct|will do|got it)\b/gi
+  while ((match = confirmRegex.exec(fullText)) !== null) {
+    result.confirmations.push(match[1])
+  }
+
+  return result
 }
 
-// Build the 3-line Basic Recap
 interface BasicRecap {
-  lineA: string // Goal status
-  lineB: string // Best available answer
-  lineC: string // Next step
-  evidence?: string // Optional quote
+  outcomeSentence: string
+  evidence: string | null
+  dateNote: string | null
+  hasUncertainty: boolean
 }
 
-function buildBasicRecap(
+/**
+ * Build a deterministic basic recap from transcript.
+ * Rules:
+ * 1. Use EXACT values from transcript - never show "00" if transcript says "1:00 p.m."
+ * 2. Only claim uncertainty if transcript truly has multiple conflicting values
+ * 3. Evidence must be a direct quote from transcript
+ */
+function buildTranscriptGroundedRecap(
   outcome: CallCardStatus,
-  mentions: ExtractedMention[],
+  extracted: ExtractedInfo,
   hasTranscript: boolean
 ): BasicRecap {
-  // Line A: Goal status based on outcome
-  let lineA: string
-  switch (outcome) {
-    case 'completed':
-      if (mentions.length > 0) {
-        lineA = 'Partially confirmed: the call connected but we could not generate a full recap.'
-      } else {
-        lineA = 'Could not confirm: the call connected but no specific information was captured.'
-      }
-      break
-    case 'no_answer':
-      lineA = 'Not confirmed: no one answered the call.'
-      break
-    case 'busy':
-      lineA = 'Could not complete: the line was busy.'
-      break
-    case 'voicemail':
-      lineA = 'Not confirmed: reached voicemail instead of a person.'
-      break
-    case 'failed':
-      lineA = 'Could not complete: the call failed to connect.'
-      break
-    case 'canceled':
-      lineA = 'Could not complete: the call was canceled before connecting.'
-      break
-    default:
-      lineA = 'Could not confirm: call status unclear.'
-  }
-
-  // Line B: Best available answer with context
-  let lineB: string
-  let evidence: string | undefined
-
-  if (mentions.length > 0) {
-    const timeMentions = mentions.filter(m => m.type === 'time' || m.type === 'relative_time')
-    const moneyMentions = mentions.filter(m => m.type === 'money')
-
-    if (timeMentions.length > 0) {
-      const times = timeMentions.map(m => `"${m.value}"`).join(' and ')
-      if (timeMentions.length === 1) {
-        lineB = `A time was mentioned (${times}), but it was unclear whether this refers to today, tomorrow, or another date.`
-      } else {
-        lineB = `Multiple times were mentioned (${times}), but the exact meaning was unclear. Please check the transcript.`
-      }
-      evidence = `"...${timeMentions[0].context}..."`
-    } else if (moneyMentions.length > 0) {
-      const amounts = moneyMentions.map(m => m.value).join(' and ')
-      lineB = `An amount was mentioned (${amounts}), but the context was unclear. Please check the transcript.`
-      evidence = `"...${moneyMentions[0].context}..."`
-    } else {
-      lineB = 'Some information may have been shared, but the context was unclear. Please check the transcript.'
+  // Handle non-connected outcomes
+  if (outcome === 'no_answer') {
+    return {
+      outcomeSentence: 'No one answered the call.',
+      evidence: null,
+      dateNote: 'You may want to try calling again later.',
+      hasUncertainty: false
     }
-  } else if (hasTranscript) {
-    lineB = 'The conversation was recorded, but no specific times, dates, or amounts were detected.'
-  } else {
-    lineB = 'No conversation was recorded for this call.'
+  }
+  if (outcome === 'busy') {
+    return {
+      outcomeSentence: 'The line was busy.',
+      evidence: null,
+      dateNote: 'Try calling back in a few minutes.',
+      hasUncertainty: false
+    }
+  }
+  if (outcome === 'voicemail') {
+    return {
+      outcomeSentence: 'Reached voicemail instead of a person.',
+      evidence: null,
+      dateNote: 'You may want to try calling again or wait for a callback.',
+      hasUncertainty: false
+    }
+  }
+  if (outcome === 'failed' || outcome === 'canceled') {
+    return {
+      outcomeSentence: 'The call did not connect.',
+      evidence: null,
+      dateNote: 'Please try again.',
+      hasUncertainty: false
+    }
   }
 
-  // Line C: Next step
-  let lineC: string
-  if (outcome === 'no_answer' || outcome === 'busy' || outcome === 'failed') {
-    lineC = 'Next step: try calling again later.'
-  } else if (outcome === 'voicemail') {
-    lineC = 'Next step: wait for a callback or try again later.'
-  } else if (mentions.length > 0) {
-    lineC = 'Next step: review the transcript to confirm the exact details.'
-  } else if (hasTranscript) {
-    lineC = 'Next step: review the transcript for any relevant information.'
-  } else {
-    lineC = 'Next step: consider calling again to get the information you need.'
+  // For completed calls - build from transcript data
+  if (!hasTranscript) {
+    return {
+      outcomeSentence: 'The call connected but no transcript was captured.',
+      evidence: null,
+      dateNote: null,
+      hasUncertainty: true
+    }
   }
 
-  return { lineA, lineB, lineC, evidence }
+  // Build outcome sentence from extracted info
+  const times = extracted.times
+  const dates = extracted.dates
+
+  // RULE: If we have exact times, use them EXACTLY
+  if (times.length === 1) {
+    // Single time mentioned - this is clear, use it
+    const time = times[0]
+    let sentence = `They said "${time.normalized}"`
+
+    // Add date context if available
+    if (dates.length > 0) {
+      sentence += ` (${dates[0].value})`
+    }
+    sentence += '.'
+
+    return {
+      outcomeSentence: sentence,
+      evidence: `"${time.context}"`,
+      dateNote: dates.length === 0 ? 'The specific day was not mentioned.' : null,
+      hasUncertainty: false
+    }
+  }
+
+  if (times.length > 1) {
+    // Multiple times - check if they're similar (range) or contradictory
+    const timeValues = times.map(t => t.normalized)
+    const sentence = `Multiple times were mentioned: ${timeValues.join(' and ')}.`
+
+    return {
+      outcomeSentence: sentence,
+      evidence: `"${times[0].context}"`,
+      dateNote: 'Review the transcript to confirm which time applies.',
+      hasUncertainty: true
+    }
+  }
+
+  // No times but call completed - check for other confirmations
+  if (extracted.amounts.length > 0) {
+    const amount = extracted.amounts[0]
+    return {
+      outcomeSentence: `An amount of ${amount.value} was mentioned.`,
+      evidence: `"${amount.context}"`,
+      dateNote: 'Review the transcript for full context.',
+      hasUncertainty: false
+    }
+  }
+
+  if (extracted.confirmations.length > 0) {
+    return {
+      outcomeSentence: 'The call connected and they responded.',
+      evidence: null,
+      dateNote: 'Review the transcript for details.',
+      hasUncertainty: false
+    }
+  }
+
+  // Transcript exists but no specific info extracted
+  return {
+    outcomeSentence: 'The call connected. Review the transcript for details.',
+    evidence: null,
+    dateNote: null,
+    hasUncertainty: false
+  }
 }
 
 // Skeleton for loading state
@@ -215,6 +283,7 @@ export default function CallRecapCard({
   // Track elapsed time since summary request
   useEffect(() => {
     if (summaryState !== 'loading' || !summaryRequestedAt) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset is intentional when loading stops
       setElapsedSeconds(0)
       return
     }
@@ -224,9 +293,10 @@ export default function CallRecapCard({
     return () => clearInterval(interval)
   }, [summaryState, summaryRequestedAt])
 
-  // Reset retrying state when summary state changes
+  // Reset retrying state when summary state changes from loading
   useEffect(() => {
     if (summaryState !== 'loading') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset is intentional when loading stops
       setIsRetrying(false)
     }
   }, [summaryState])
@@ -234,12 +304,21 @@ export default function CallRecapCard({
   const hasTranscript = transcriptTurns.length > 0
   const statusPill = STATUS_PILL[outcome]
 
-  // Get takeaways (max 2)
-  const takeaways = callCardData?.outcome?.takeaways?.slice(0, 2) || []
+  // ============================================================================
+  // STATE MODEL: Determine what recap data we have
+  // ============================================================================
+  const hasFullRecap = !!callCardData?.outcome?.sentence
+  const extracted = extractFromTranscript(transcriptTurns)
+  const basicRecap = buildTranscriptGroundedRecap(outcome, extracted, hasTranscript)
+  const hasBasicRecapContent = basicRecap.outcomeSentence !== 'The call connected. Review the transcript for details.'
 
-  // Build basic recap from transcript
-  const mentions = extractMentions(transcriptTurns)
-  const basicRecap = buildBasicRecap(outcome, mentions, hasTranscript)
+  // Determine UI state - NEVER show contradictory states
+  const isLoading = summaryState === 'loading' && !isRetrying
+  const isFullRecapFailed = summaryState === 'failed' && !hasFullRecap
+  const isIdle = summaryState === 'idle' && !hasFullRecap
+
+  // Get takeaways from full recap (max 2)
+  const takeaways = callCardData?.outcome?.takeaways?.slice(0, 2) || []
 
   // Handle retry with state feedback
   const handleRetry = () => {
@@ -250,31 +329,15 @@ export default function CallRecapCard({
   // Handle open transcript with immediate feedback
   const handleOpenTranscript = () => {
     setIsOpening(true)
-    // Small delay to show the "Opening..." state before navigation
     setTimeout(() => {
       onExpand()
-      // Reset after a brief moment (in case navigation doesn't unmount this)
       setTimeout(() => setIsOpening(false), 500)
     }, 100)
   }
 
-  // Determine what to show
-  const hasAIRecap = !!callCardData?.outcome?.sentence
-  const showLoading = summaryState === 'loading'
-  const showFailed = summaryState === 'failed' && !hasAIRecap
-  const showIdle = summaryState === 'idle' && !hasAIRecap
-
-  // Determine retry message based on retry count
-  const getRetryMessage = () => {
-    if (retryCount === 0) return null
-    if (retryCount >= 2) return 'Still unavailable. Try again in a moment.'
-    return null
-  }
-  const retryMessage = getRetryMessage()
-
   return (
     <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm max-w-sm">
-      {/* Header - Clean and minimal */}
+      {/* Header */}
       <div className="px-4 py-3 border-b border-slate-100">
         <div className="flex items-center justify-between">
           <div>
@@ -291,15 +354,36 @@ export default function CallRecapCard({
 
       {/* Recap content */}
       <div className="px-4 py-3 border-b border-slate-100">
-        {/* AI Recap (succeeded) */}
-        {hasAIRecap && (
-          <p className="text-sm text-slate-900 leading-relaxed">
-            {callCardData.outcome!.sentence}
-          </p>
+
+        {/* ================================================================
+            STATE: Full recap available (AI-generated)
+            ================================================================ */}
+        {hasFullRecap && (
+          <div className="space-y-2">
+            <p className="text-sm text-slate-900 leading-relaxed">
+              {callCardData!.outcome!.sentence}
+            </p>
+            {/* Takeaways from full recap */}
+            {takeaways.length > 0 && (
+              <div className="pt-2 border-t border-slate-100 space-y-1">
+                {takeaways.map((t, i) => (
+                  <p key={i} className="text-sm text-slate-600">
+                    <span className="text-slate-400">{t.label}:</span>{' '}
+                    <span className="font-medium">{t.value}</span>
+                    {t.confidence === 'low' && (
+                      <span className="text-orange-500 text-xs ml-1">(uncertain)</span>
+                    )}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
-        {/* Loading state */}
-        {showLoading && !isRetrying && (
+        {/* ================================================================
+            STATE: Loading (generating full recap)
+            ================================================================ */}
+        {isLoading && (
           <div className="space-y-3">
             <div className="flex items-center gap-2">
               <div className="w-3 h-3 border-2 border-slate-300 border-t-teal-500 rounded-full animate-spin" />
@@ -307,14 +391,15 @@ export default function CallRecapCard({
                 {elapsedSeconds < 15 ? 'Generating recap...' : 'Still working...'}
               </span>
             </div>
-            {/* Always show transcript access while loading */}
             {hasTranscript && elapsedSeconds >= 5 && (
               <p className="text-xs text-slate-400">Your transcript is saved and ready to view.</p>
             )}
           </div>
         )}
 
-        {/* Retrying state */}
+        {/* ================================================================
+            STATE: Retrying
+            ================================================================ */}
         {isRetrying && (
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 border-2 border-slate-300 border-t-teal-500 rounded-full animate-spin" />
@@ -322,56 +407,70 @@ export default function CallRecapCard({
           </div>
         )}
 
-        {/* Failed state - ALWAYS show useful fallback, never raw errors */}
-        {showFailed && !isRetrying && (
+        {/* ================================================================
+            STATE: Full recap failed - Show basic recap WITHOUT contradiction
+            Key rule: NEVER say "recap unavailable" while showing a recap
+            ================================================================ */}
+        {isFullRecapFailed && !isRetrying && (
           <div className="space-y-3">
-            {/* User-friendly message - NEVER show system errors */}
-            <div className="bg-slate-50 rounded-lg px-3 py-2">
-              <p className="text-sm text-slate-600">
-                Recap is temporarily unavailable.
-                {hasTranscript && ' Your transcript is still saved.'}
-              </p>
-              {retryMessage && (
-                <p className="text-xs text-slate-400 mt-1">{retryMessage}</p>
-              )}
+            {/* Header for basic recap - NO "unavailable" message if we have content */}
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+                {hasBasicRecapContent ? 'Basic recap' : 'Transcript summary'}
+              </span>
+              <button
+                onClick={handleRetry}
+                disabled={isRetrying}
+                className="text-xs font-medium text-teal-600 hover:text-teal-700 active:text-teal-800 transition-colors disabled:opacity-50"
+              >
+                {retryCount >= 2 ? 'Try full recap again' : 'Get full recap'}
+              </button>
             </div>
 
-            {/* Basic Recap fallback - always provide value */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">Basic recap</span>
-                <button
-                  onClick={handleRetry}
-                  disabled={isRetrying}
-                  className="text-xs font-medium text-teal-600 hover:text-teal-700 active:text-teal-800 transition-colors disabled:opacity-50"
-                >
-                  Retry recap
-                </button>
-              </div>
-              {/* Line A: Goal status */}
-              <p className="text-sm text-slate-900 leading-relaxed">
-                {basicRecap.lineA}
+            {/* Only show this note if we have NO basic recap content */}
+            {!hasBasicRecapContent && !hasTranscript && (
+              <p className="text-sm text-slate-500">
+                Transcript not available. Please try calling again.
               </p>
-              {/* Line B: Best available answer */}
-              <p className="text-sm text-slate-700 leading-relaxed">
-                {basicRecap.lineB}
-              </p>
-              {/* Evidence quote (if available) */}
-              {basicRecap.evidence && (
-                <p className="text-xs text-slate-500 italic pl-3 border-l-2 border-slate-200">
-                  Evidence: {basicRecap.evidence}
+            )}
+
+            {/* Basic recap content - transcript-grounded */}
+            {(hasBasicRecapContent || hasTranscript) && (
+              <div className="space-y-2">
+                {/* Main outcome sentence */}
+                <p className="text-sm text-slate-900 leading-relaxed">
+                  {basicRecap.outcomeSentence}
                 </p>
-              )}
-              {/* Line C: Next step */}
-              <p className="text-sm text-slate-600 leading-relaxed">
-                {basicRecap.lineC}
+
+                {/* Evidence quote - direct from transcript */}
+                {basicRecap.evidence && (
+                  <p className="text-xs text-slate-500 italic pl-3 border-l-2 border-slate-200">
+                    {basicRecap.evidence}
+                  </p>
+                )}
+
+                {/* Date/context note */}
+                {basicRecap.dateNote && (
+                  <p className="text-xs text-slate-500">
+                    {basicRecap.dateNote}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Retry message if multiple failed attempts */}
+            {retryCount >= 2 && (
+              <p className="text-xs text-slate-400 bg-slate-50 rounded px-2 py-1">
+                Full recap is temporarily unavailable. Basic recap shown above.
               </p>
-            </div>
+            )}
           </div>
         )}
 
-        {/* Idle state (waiting for summary to start) */}
-        {showIdle && (
+        {/* ================================================================
+            STATE: Idle (waiting for summary to start)
+            ================================================================ */}
+        {isIdle && (
           <div className="space-y-2">
             <SkeletonText width="w-full" />
             <SkeletonText width="w-2/3" />
@@ -380,24 +479,9 @@ export default function CallRecapCard({
             )}
           </div>
         )}
-
-        {/* Takeaways - Only if available from AI, max 2 */}
-        {takeaways.length > 0 && (
-          <div className="mt-2 pt-2 border-t border-slate-100 space-y-1">
-            {takeaways.map((t, i) => (
-              <p key={i} className="text-sm text-slate-600">
-                <span className="text-slate-400">{t.label}:</span>{' '}
-                <span className="font-medium">{t.value}</span>
-                {t.confidence === 'low' && (
-                  <span className="text-orange-500 text-xs ml-1">(uncertain)</span>
-                )}
-              </p>
-            ))}
-          </div>
-        )}
       </div>
 
-      {/* Action - Open transcript (always functional) */}
+      {/* Action - Open transcript */}
       {hasTranscript && (
         <div className="px-4 py-3">
           <button
@@ -414,7 +498,7 @@ export default function CallRecapCard({
         </div>
       )}
 
-      {/* Fallback when no transcript - still provide action */}
+      {/* Fallback when no transcript */}
       {!hasTranscript && (
         <div className="px-4 py-3 text-center">
           <p className="text-xs text-slate-400">No transcript available for this call.</p>

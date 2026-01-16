@@ -140,21 +140,36 @@ serve(async (req) => {
   }
 
   try {
-    const { call_id, transcription, is_opening } = await req.json()
+    console.log('[voice-agent] ========== REQUEST RECEIVED ==========')
+
+    const body = await req.json()
+    const { call_id, transcription, is_opening } = body
+    console.log('[voice-agent] call_id:', call_id)
+    console.log('[voice-agent] is_opening:', is_opening)
+    console.log('[voice-agent] transcription:', transcription?.substring(0, 100) || 'none')
 
     if (!call_id) {
+      console.error('[voice-agent] ERROR: No call_id provided')
       throw new Error('call_id is required')
     }
 
-    const serviceClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    )
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+
+    if (!supabaseUrl || !serviceRoleKey) {
+      console.error('[voice-agent] ERROR: Missing Supabase credentials')
+      throw new Error('Missing Supabase credentials')
+    }
+
+    const serviceClient = createClient(supabaseUrl, serviceRoleKey)
 
     const openaiKey = Deno.env.get('OPENAI_API_KEY')
     const telnyxApiKey = Deno.env.get('TELNYX_API_KEY')
 
+    console.log('[voice-agent] API keys present:', { openai: !!openaiKey, telnyx: !!telnyxApiKey })
+
     if (!openaiKey || !telnyxApiKey) {
+      console.error('[voice-agent] ERROR: Missing API keys')
       throw new Error('Missing required API keys (OPENAI_API_KEY, TELNYX_API_KEY)')
     }
 

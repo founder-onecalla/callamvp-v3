@@ -120,36 +120,63 @@ serve(async (req) => {
     console.log('call-start: Telnyx credentials present, initiating call...')
 
     // Initiate Telnyx call
-    // NOTE: AMD disabled temporarily for debugging - was potentially hanging up calls incorrectly
-    const telnyxResponse = await fetch('https://api.telnyx.com/v2/calls', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${telnyxApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        connection_id: telnyxConnectionId,
-        to: formattedNumber,
-        from: telnyxFromNumber,
-        webhook_url: `${supabaseUrl}/functions/v1/webhook-telnyx`,
-        webhook_url_method: 'POST',
-        // answering_machine_detection: 'detect', // DISABLED for debugging
-        client_state: btoa(JSON.stringify({ call_id: call.id, user_id: user.id })),
-      }),
-    })
+    // IMPORTANT: webhook_url must be publicly accessible and the Telnyx Connection must allow per-call webhooks
+    const webhookUrl = `${supabaseUrl}/functions/v1/webhook-telnyx`
+    console.log('call-start: ========== INITIATING TELNYX CALL ==========')
+    console.log('call-start: WEBHOOK URL:', webhookUrl)
+    console.log('call-start: CONNECTION_ID:', telnyxConnectionId)
+    console.log('call-start: FROM:', telnyxFromNumber)
+    console.log('call-start: TO:', formattedNumber)
+
+    let telnyxResponse
+    try {
+      telnyxResponse = await fetch('https://api.telnyx.com/v2/calls', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${telnyxApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          connection_id: telnyxConnectionId,
+          to: formattedNumber,
+          from: telnyxFromNumber,
+          webhook_url: webhookUrl,
+          webhook_url_method: 'POST',
+          client_state: btoa(JSON.stringify({ call_id: call.id, user_id: user.id })),
+        }),
+      })
+    } catch (fetchError) {
+      console.error('call-start: Telnyx fetch failed:', fetchError)
+      await serviceClient
+        .from('calls')
+        .update({ status: 'ended', ended_at: new Date().toISOString(), outcome: 'failed' })
+        .eq('id', call.id)
+      throw new Error('Failed to connect to Telnyx')
+    }
+
+    console.log('call-start: Telnyx response status:', telnyxResponse.status)
 
     if (!telnyxResponse.ok) {
-      const error = await telnyxResponse.text()
+      const errorText = await telnyxResponse.text()
+      console.error('call-start: Telnyx API error:', telnyxResponse.status, errorText)
       // Update call status to ended if Telnyx fails
       await serviceClient
         .from('calls')
-        .update({ status: 'ended', ended_at: new Date().toISOString() })
+        .update({ status: 'ended', ended_at: new Date().toISOString(), outcome: 'failed' })
         .eq('id', call.id)
-      throw new Error(`Telnyx API error: ${error}`)
+      throw new Error(`Telnyx API error (${telnyxResponse.status}): ${errorText}`)
     }
 
     const telnyxData = await telnyxResponse.json()
-    const telnyxCallId = telnyxData.data.call_control_id
+    console.log('call-start: Telnyx response data:', JSON.stringify(telnyxData))
+    const telnyxCallId = telnyxData.data?.call_control_id
+
+    if (!telnyxCallId) {
+      console.error('call-start: No call_control_id in Telnyx response')
+      throw new Error('Telnyx did not return a call ID')
+    }
+
+    console.log('call-start: Telnyx call initiated, call_control_id:', telnyxCallId)
 
     // Update call with Telnyx call ID
     await serviceClient

@@ -140,7 +140,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [currentCall?.id, requestSummary])
+  }, [currentCall, requestSummary])
 
   // Subscribe to transcriptions via bridge WebSocket (if available) for lower latency
   useEffect(() => {
@@ -213,7 +213,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
       }
       supabase.removeChannel(channel)
     }
-  }, [currentCall?.id])
+  }, [currentCall])
 
   // Subscribe to call events (for live status)
   useEffect(() => {
@@ -238,7 +238,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [currentCall?.id])
+  }, [currentCall])
 
   const startCall = useCallback(async (phoneNumber: string, contextId?: string, purpose?: string, conversationId?: string | null) => {
     if (!session?.access_token) {
@@ -271,13 +271,26 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
       if (response.error) {
         console.error('Call start API error:', response.error)
-        throw new Error('Unable to start call. Please try again.')
+        const errorMsg = 'Unable to start call. Please try again.'
+        setError(errorMsg)
+        throw new Error(errorMsg) // Re-throw so caller knows it failed
       }
 
+      if (!response.data?.call) {
+        console.error('Call start returned no call data:', response.data)
+        const errorMsg = 'Call failed to start. Please try again.'
+        setError(errorMsg)
+        throw new Error(errorMsg)
+      }
+
+      // Call started successfully
       setCurrentCall(response.data.call)
     } catch (err) {
       console.error('Failed to start call:', err)
-      setError('Unable to start call. Please try again.')
+      const errorMsg = err instanceof Error ? err.message : 'Unable to start call. Please try again.'
+      setError(errorMsg)
+      setIsLoading(false)
+      throw err // Re-throw so caller knows it failed
     } finally {
       setIsLoading(false)
     }
