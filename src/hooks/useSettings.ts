@@ -3,6 +3,11 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import type { UserSettings } from '../lib/types'
 
+// Helper to access user_settings table
+// The table isn't in our generated types yet, so we use type assertions
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const userSettingsFrom = () => (supabase as any).from('user_settings')
+
 interface UseSettingsReturn {
   settings: UserSettings | null
   isLoading: boolean
@@ -38,17 +43,15 @@ export function useSettings(): UseSettingsReturn {
       setError(null)
 
       // Try to get existing settings
-      const { data, error: fetchError } = await supabase
-        .from('user_settings')
+      const { data, error: fetchError } = await userSettingsFrom()
         .select('*')
         .eq('user_id', user.id)
         .single()
 
       if (fetchError) {
         // If not found, create default settings
-        if (fetchError.code === 'PGRST116') {
-          const { data: newData, error: insertError } = await supabase
-            .from('user_settings')
+        if ((fetchError as { code?: string }).code === 'PGRST116') {
+          const { data: newData, error: insertError } = await userSettingsFrom()
             .insert({ user_id: user.id })
             .select()
             .single()
@@ -81,8 +84,7 @@ export function useSettings(): UseSettingsReturn {
       setIsSaving(true)
       setError(null)
 
-      const { data, error: updateError } = await supabase
-        .from('user_settings')
+      const { data, error: updateError } = await userSettingsFrom()
         .update(updates)
         .eq('user_id', user.id)
         .select()
@@ -112,7 +114,7 @@ export function useSettings(): UseSettingsReturn {
       const { data: userCalls, error: fetchError } = await supabase
         .from('calls')
         .select('id')
-        .eq('user_id', user.id)
+        .eq('user_id', user.id) as { data: { id: string }[] | null; error: Error | null }
 
       if (fetchError) throw fetchError
 

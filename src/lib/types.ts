@@ -296,6 +296,11 @@ export interface Database {
         Insert: Omit<Conversation, 'id' | 'created_at' | 'updated_at'>
         Update: Partial<Omit<Conversation, 'id'>>
       }
+      user_settings: {
+        Row: UserSettings
+        Insert: Partial<Omit<UserSettings, 'created_at' | 'updated_at'>> & { user_id: string }
+        Update: Partial<Omit<UserSettings, 'user_id' | 'created_at' | 'updated_at'>>
+      }
     }
   }
 }
