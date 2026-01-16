@@ -1,10 +1,14 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { supabase } from '../lib/supabase'
-import type { Call, Transcription, CallEvent, CallCardData } from '../lib/types'
+import type { Call, Transcription, CallEvent, CallCardData, RecapStatus } from '../lib/types'
 import { useAuth } from '../lib/AuthContext'
 
-// Summary generation state
-export type SummaryState = 'idle' | 'loading' | 'succeeded' | 'failed'
+// ============================================================================
+// RECAP STATE MODEL - Single source of truth
+// ============================================================================
+// The recap_status field on the call record is the ONLY source of truth.
+// UI is a pure function of this state. No local overrides.
+// ============================================================================
 
 interface CallContextType {
   currentCall: Call | null
@@ -16,16 +20,22 @@ interface CallContextType {
   startCall: (phoneNumber: string, contextId?: string, purpose?: string, conversationId?: string | null) => Promise<void>
   hangUp: () => Promise<void>
   sendDtmf: (digits: string) => Promise<void>
+  // Recap state - derived from call record, not local state
+  recapStatus: RecapStatus | null
   callCardData: CallCardData | null
-  lastSummary: string | null
-  // Summary state tracking
-  summaryState: SummaryState
-  summaryRequestedAt: number | null
-  retryCount: number
   retrySummary: () => Promise<void>
 }
 
 const CallContext = createContext<CallContextType | null>(null)
+
+// Polling intervals with backoff
+const POLL_INTERVALS = [2000, 3000, 5000, 8000, 10000] // 2s, 3s, 5s, 8s, 10s
+
+// ============================================================================
+// STALENESS THRESHOLDS - For reconciliation safeguard
+// ============================================================================
+const STALE_UPDATE_THRESHOLD_MS = 30_000 // 30 seconds without update = potentially stale
+const MAX_ACTIVE_CALL_DURATION_MS = 120_000 // 2 minutes = definitely check DB
 
 export function CallProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth()
@@ -36,83 +46,192 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [callCardData, setCallCardData] = useState<CallCardData | null>(null)
-  const [lastSummary, setLastSummary] = useState<string | null>(null)
 
-  // Summary state tracking
-  const [summaryState, setSummaryState] = useState<SummaryState>('idle')
-  const [summaryRequestedAt, setSummaryRequestedAt] = useState<number | null>(null)
-  const [retryCount, setRetryCount] = useState(0)
+  // Track if we've already initiated recap for this call
+  const recapInitiatedRef = useRef<string | null>(null)
+  // Polling state
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollAttemptRef = useRef(0)
+  
+  // ============================================================================
+  // RECONCILIATION STATE - Track last update time for staleness detection
+  // ============================================================================
+  const lastUpdateRef = useRef<number>(Date.now())
+  const reconciliationInProgressRef = useRef<boolean>(false)
 
-  // Track if we've already requested a summary for this call
-  const summaryRequestedRef = useRef<string | null>(null)
+  // Derive recap status from call record - single source of truth
+  const recapStatus: RecapStatus | null = currentCall?.recap_status ?? null
 
-  // Cache the last successful callCardData - NEVER replace with error
-  const lastSuccessfulDataRef = useRef<CallCardData | null>(null)
-
-  // Request summary function (can be called for retry)
-  const requestSummary = useCallback(async (callId: string, isRetry = false) => {
-    // If we already have successful data for this call, don't risk losing it
-    if (lastSuccessfulDataRef.current?.callId === callId && !isRetry) {
-      setSummaryState('succeeded')
-      setCallCardData(lastSuccessfulDataRef.current)
-      return
+  // Stop polling
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
     }
+    pollAttemptRef.current = 0
+  }, [])
 
-    setSummaryState('loading')
-    setSummaryRequestedAt(Date.now())
-
-    if (isRetry) {
-      setRetryCount(prev => prev + 1)
-    }
-
+  // Fetch recap data when status is ready
+  const fetchRecapData = useCallback(async (callId: string) => {
     try {
       const response = await supabase.functions.invoke('call-summary', {
-        body: { call_id: callId },
+        body: { call_id: callId, fetch_only: true },
       })
 
-      if (response.error) {
-        // Log the actual error for debugging but don't expose to UI
-        console.error('Summary API error:', response.error)
-        throw new Error('recap_unavailable')
-      }
-
       if (response.data?.callCardData) {
-        const data = response.data.callCardData
-        // Cache successful data - this is the golden copy
-        lastSuccessfulDataRef.current = data
-        setCallCardData(data)
-        setSummaryState('succeeded')
-        setRetryCount(0) // Reset retry count on success
-      } else {
-        throw new Error('recap_unavailable')
-      }
-
-      if (response.data?.summary) {
-        setLastSummary(response.data.summary)
+        setCallCardData(response.data.callCardData)
       }
     } catch (err) {
-      console.error('Failed to get call summary:', err)
-
-      // If we have cached successful data, keep showing it instead of error
-      if (lastSuccessfulDataRef.current?.callId === callId) {
-        setSummaryState('succeeded')
-        setCallCardData(lastSuccessfulDataRef.current)
-      } else {
-        setSummaryState('failed')
-      }
+      console.error('Failed to fetch recap data:', err)
     }
   }, [])
 
-  // Retry summary function
+  // Request recap generation
+  const requestRecap = useCallback(async (callId: string, isRetry = false) => {
+    try {
+      // Set to pending state immediately (optimistic)
+      setCurrentCall(prev => prev ? {
+        ...prev,
+        recap_status: 'recap_pending',
+        recap_last_attempt_at: new Date().toISOString(),
+        recap_attempt_count: (prev.recap_attempt_count || 0) + 1
+      } : prev)
+
+      const response = await supabase.functions.invoke('call-summary', {
+        body: { call_id: callId, is_retry: isRetry },
+      })
+
+      if (response.error) {
+        console.error('Recap API error:', response.error)
+        // Backend will update the call record with appropriate status
+        return
+      }
+
+      // Backend returns the updated call card data
+      if (response.data?.callCardData) {
+        setCallCardData(response.data.callCardData)
+      }
+
+      // The real status comes from the call record via realtime subscription
+    } catch (err) {
+      console.error('Failed to request recap:', err)
+    }
+  }, [])
+
+  // ============================================================================
+  // RECONCILIATION SAFEGUARD - Detect and heal stuck call states
+  // ============================================================================
+  // If a call appears active but hasn't received updates in 30s, or has been
+  // "answered" for >2 minutes, directly query DB to check actual state.
+  // This prevents UI from showing "Live Call" for ended calls when Realtime fails.
+  // ============================================================================
+  const reconcileCallState = useCallback(async () => {
+    if (!currentCall || reconciliationInProgressRef.current) return
+    
+    // Only reconcile active calls (not already ended)
+    if (currentCall.status === 'ended' || currentCall.ended_at) return
+    
+    reconciliationInProgressRef.current = true
+    
+    try {
+      const { data: latestCall, error: fetchError } = await supabase
+        .from('calls')
+        .select('*')
+        .eq('id', currentCall.id)
+        .single()
+      
+      if (fetchError) {
+        console.error('[useCall] Reconciliation fetch failed:', fetchError)
+        return
+      }
+      
+      const dbCall = latestCall as Call
+      
+      // INVARIANT CHECK: If DB has ended_at or status='ended', update local state
+      if (dbCall.ended_at || dbCall.status === 'ended') {
+        console.warn('[useCall] Reconciliation detected ended call - Realtime may have missed update')
+        setCurrentCall(dbCall)
+        lastUpdateRef.current = Date.now()
+        
+        // Trigger recap if needed
+        if (recapInitiatedRef.current !== dbCall.id) {
+          recapInitiatedRef.current = dbCall.id
+          await requestRecap(dbCall.id)
+        }
+      } else if (dbCall.status !== currentCall.status) {
+        // Status changed but not to ended - still update
+        console.warn('[useCall] Reconciliation detected status change:', currentCall.status, '->', dbCall.status)
+        setCurrentCall(dbCall)
+        lastUpdateRef.current = Date.now()
+      }
+    } finally {
+      reconciliationInProgressRef.current = false
+    }
+  }, [currentCall, requestRecap])
+
+  // Retry function exposed to UI
   const retrySummary = useCallback(async () => {
     if (!currentCall) return
-    summaryRequestedRef.current = currentCall.id
-    await requestSummary(currentCall.id, true)
-  }, [currentCall, requestSummary])
+    stopPolling()
+    recapInitiatedRef.current = currentCall.id
+    await requestRecap(currentCall.id, true)
+  }, [currentCall, requestRecap, stopPolling])
+
+  // Poll for recap status when pending
+  useEffect(() => {
+    if (!currentCall || recapStatus !== 'recap_pending') {
+      stopPolling()
+      return
+    }
+
+    // Start polling with backoff
+    const poll = async () => {
+      pollAttemptRef.current++
+
+      // Fetch latest call status
+      const { data: latestCall } = await supabase
+        .from('calls')
+        .select('*')
+        .eq('id', currentCall.id)
+        .single()
+
+      const latestStatus = (latestCall as Call | null)?.recap_status
+      if (latestStatus && latestStatus !== 'recap_pending') {
+        stopPolling()
+        // Update will come via realtime subscription
+      } else if (pollAttemptRef.current >= 10) {
+        // Max 10 attempts (~45 seconds total), then mark as transient failure
+        stopPolling()
+        setCurrentCall(prev => prev ? {
+          ...prev,
+          recap_status: 'recap_failed_transient',
+          recap_error_code: 'TIMEOUT'
+        } : prev)
+      }
+    }
+
+    // Initial poll
+    poll()
+
+    // Set up interval with backoff
+    pollIntervalRef.current = setInterval(poll, POLL_INTERVALS[Math.min(pollAttemptRef.current, POLL_INTERVALS.length - 1)])
+
+    return () => stopPolling()
+  }, [currentCall?.id, recapStatus, stopPolling])
+
+  // Fetch recap data when status becomes ready
+  useEffect(() => {
+    if (currentCall && recapStatus === 'recap_ready' && !callCardData) {
+      fetchRecapData(currentCall.id)
+    }
+  }, [currentCall?.id, recapStatus, callCardData, fetchRecapData])
 
   // Subscribe to call updates
   useEffect(() => {
     if (!currentCall) return
+
+    // Reset update tracker when subscribing to a new call
+    lastUpdateRef.current = Date.now()
 
     const channel = supabase
       .channel(`call-${currentCall.id}`)
@@ -127,11 +246,19 @@ export function CallProvider({ children }: { children: ReactNode }) {
         async (payload) => {
           const updatedCall = payload.new as Call
           setCurrentCall(updatedCall)
+          
+          // Track that we received an update (for staleness detection)
+          lastUpdateRef.current = Date.now()
 
-          // When call ends, request summary
-          if (updatedCall.status === 'ended' && summaryRequestedRef.current !== updatedCall.id) {
-            summaryRequestedRef.current = updatedCall.id
-            await requestSummary(updatedCall.id)
+          // When call ends, initiate recap if not already done
+          if (updatedCall.status === 'ended' && recapInitiatedRef.current !== updatedCall.id) {
+            recapInitiatedRef.current = updatedCall.id
+            await requestRecap(updatedCall.id)
+          }
+
+          // When recap becomes ready, fetch the data
+          if (updatedCall.recap_status === 'recap_ready' && !callCardData) {
+            await fetchRecapData(updatedCall.id)
           }
         }
       )
@@ -140,7 +267,47 @@ export function CallProvider({ children }: { children: ReactNode }) {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [currentCall, requestSummary])
+  }, [currentCall, requestRecap, fetchRecapData, callCardData])
+  
+  // ============================================================================
+  // STALENESS DETECTION - Periodic check for stuck call states
+  // ============================================================================
+  // Every 10 seconds, check if the call appears stale and trigger reconciliation.
+  // This is the safety net that prevents "Live Call" from showing forever.
+  // ============================================================================
+  useEffect(() => {
+    if (!currentCall) return
+    
+    // Only monitor active calls
+    if (currentCall.status === 'ended' || currentCall.ended_at) return
+    
+    const checkStaleness = () => {
+      const now = Date.now()
+      const timeSinceLastUpdate = now - lastUpdateRef.current
+      const callDuration = currentCall.started_at 
+        ? now - new Date(currentCall.started_at).getTime()
+        : 0
+      
+      const isStale = timeSinceLastUpdate > STALE_UPDATE_THRESHOLD_MS
+      const isTooLong = callDuration > MAX_ACTIVE_CALL_DURATION_MS
+      
+      if (isStale || isTooLong) {
+        console.warn('[useCall] Call appears stale, triggering reconciliation', {
+          callId: currentCall.id,
+          timeSinceLastUpdate: Math.round(timeSinceLastUpdate / 1000) + 's',
+          callDuration: Math.round(callDuration / 1000) + 's',
+          isStale,
+          isTooLong
+        })
+        reconcileCallState()
+      }
+    }
+    
+    // Check every 10 seconds
+    const interval = setInterval(checkStaleness, 10_000)
+    
+    return () => clearInterval(interval)
+  }, [currentCall?.id, currentCall?.status, currentCall?.ended_at, currentCall?.started_at, reconcileCallState])
 
   // Subscribe to transcriptions via bridge WebSocket (if available) for lower latency
   useEffect(() => {
@@ -251,14 +418,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setTranscriptions([])
     setCallEvents([])
     setCallCardData(null)
-    setLastSummary(null)
     setCallConversationId(conversationId ?? null)
-    summaryRequestedRef.current = null
-    lastSuccessfulDataRef.current = null // Clear cache for new call
-    // Reset summary state
-    setSummaryState('idle')
-    setSummaryRequestedAt(null)
-    setRetryCount(0)
+    recapInitiatedRef.current = null
+    stopPolling()
 
     try {
       const response = await supabase.functions.invoke('call-start', {
@@ -273,7 +435,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
         console.error('Call start API error:', response.error)
         const errorMsg = 'Unable to start call. Please try again.'
         setError(errorMsg)
-        throw new Error(errorMsg) // Re-throw so caller knows it failed
+        throw new Error(errorMsg)
       }
 
       if (!response.data?.call) {
@@ -290,11 +452,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
       const errorMsg = err instanceof Error ? err.message : 'Unable to start call. Please try again.'
       setError(errorMsg)
       setIsLoading(false)
-      throw err // Re-throw so caller knows it failed
+      throw err
     } finally {
       setIsLoading(false)
     }
-  }, [session])
+  }, [session, stopPolling])
 
   const hangUp = useCallback(async () => {
     if (!currentCall) return
@@ -351,11 +513,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
         startCall,
         hangUp,
         sendDtmf,
+        recapStatus,
         callCardData,
-        lastSummary,
-        summaryState,
-        summaryRequestedAt,
-        retryCount,
         retrySummary,
       }}
     >

@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import type { Message } from '../lib/types'
 import { useCall } from './useCall'
@@ -16,32 +16,10 @@ export function useChat(): UseChatReturn {
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { startCall, hangUp, sendDtmf, currentCall, lastSummary } = useCall()
+  const { startCall, hangUp, sendDtmf, currentCall } = useCall()
 
   // Track context_id for pre-call intelligence
   const callContextRef = useRef<string | null>(null)
-
-  // Track which summaries we've already added to messages
-  const addedSummariesRef = useRef<Set<string>>(new Set())
-
-  // When a new summary comes in, add it as a message
-  useEffect(() => {
-    if (lastSummary && !addedSummariesRef.current.has(lastSummary)) {
-      addedSummariesRef.current.add(lastSummary)
-
-      const summaryMessage: Message = {
-        id: crypto.randomUUID(),
-        user_id: '',
-        role: 'assistant',
-        content: lastSummary,
-        call_id: null,
-        conversation_id: null,
-        created_at: new Date().toISOString(),
-      }
-
-      setMessages((prev) => [...prev, summaryMessage])
-    }
-  }, [lastSummary])
 
   const handleFunctionCall = useCallback(async (
     name: string,
@@ -179,7 +157,6 @@ export function useChat(): UseChatReturn {
   const clearMessages = useCallback(() => {
     setMessages([])
     callContextRef.current = null
-    addedSummariesRef.current.clear()
   }, [])
 
   const loadConversation = useCallback(async (conversationId: string) => {
@@ -196,7 +173,6 @@ export function useChat(): UseChatReturn {
       if (fetchError) throw fetchError
 
       setMessages(data || [])
-      addedSummariesRef.current.clear()
     } catch (err) {
       console.error('Load conversation error:', err)
       setError('Unable to load conversation. Please try again.')

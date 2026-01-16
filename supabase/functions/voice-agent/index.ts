@@ -6,6 +6,16 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// ============================================================================
+// VOICE AGENT - State Machine with Natural Pacing
+// ============================================================================
+// CRITICAL RULES:
+// 1. First line MUST be short: "Hi, is this Sarah?" (max 1 sentence)
+// 2. Use SPECIFIC names, never "a friend" without context
+// 3. ONE utterance per turn, then WAIT
+// 4. If challenged, exit gracefully
+// ============================================================================
+
 interface ConversationTurn {
   role: 'agent' | 'human'
   content: string
@@ -19,118 +29,293 @@ interface CallContext {
   gathered_info: Record<string, string>
 }
 
-const systemPrompt = `You are making a phone call on behalf of someone. Speak naturally like a real person.
+// State machine for natural conversation flow
+type CallState =
+  | 'greeting'        // "Hi, is this Sarah?"
+  | 'permission'      // "Is now a good time?"
+  | 'identify'        // "This is David's assistant."
+  | 'deliver_message' // "David wanted to wish you happy birthday!"
+  | 'ask_question'    // "What time works best to reach you tomorrow?"
+  | 'confirm'         // "Got it, around 1:00 p.m. Thanks!"
+  | 'closing'         // "Thanks so much! Take care, bye!"
+  | 'challenged'      // Exit gracefully if they question us
 
-## CRITICAL RULES
-1. Your ONLY job is to accomplish the PURPOSE stated below
-2. NEVER use placeholder text like [Your Name] or [specific issue]
-3. NEVER invent names, account numbers, or details not given
-4. Keep responses SHORT - 1-2 sentences max
-
-## When to END the call (say goodbye and set end_call: true):
-- You accomplished the PURPOSE (got the answer, delivered the message, etc.)
-- They say goodbye, "talk to you later", "thanks bye", etc.
-- They ask you to call back later
-- The conversation has naturally concluded
-- They seem confused or want to end the call
-
-## When to CONTINUE (set end_call: false):
-- Still waiting for information you need
-- They asked a question you need to answer
-- The PURPOSE is not yet accomplished
-
-## During the Call
-- Listen and respond naturally
-- If asked who you are: "I'm calling on behalf of a friend"
-- If they ask you to hold: "Sure, no problem"
-- When ending: Say a warm goodbye like "Thanks so much! Take care!" or "Alright, bye!"
-
-## Current Call Context
-{CALL_CONTEXT}
-
-## Conversation So Far
-{CONVERSATION_HISTORY}
-
-Respond with JSON: {"response": "your spoken words", "end_call": true/false}`
-
-interface AgentResponse {
-  response: string
-  end_call: boolean
+interface ParsedPurpose {
+  callerName: string | null
+  recipientName: string | null
+  message: string | null       // The message to deliver
+  question: string | null      // The question to ask (safer form)
+  originalQuestion: string | null // Original question for reference
 }
 
-async function generateResponse(
-  openaiKey: string,
-  callContext: CallContext | null,
+/**
+ * Parse the call purpose into structured components
+ */
+function parsePurpose(purpose: string, gatheredInfo: Record<string, string>): ParsedPurpose {
+  const result: ParsedPurpose = {
+    callerName: gatheredInfo.caller_name || gatheredInfo.callerName || null,
+    recipientName: gatheredInfo.recipient_name || gatheredInfo.recipientName || null,
+    message: null,
+    question: null,
+    originalQuestion: null
+  }
+
+  const lowerPurpose = purpose.toLowerCase()
+
+  // Extract messages (birthday wishes, greetings, etc.)
+  if (lowerPurpose.includes('happy birthday') || lowerPurpose.includes('birthday')) {
+    result.message = 'happy birthday'
+  } else if (lowerPurpose.includes('say hello') || lowerPurpose.includes('say hi')) {
+    result.message = 'hello'
+  } else if (lowerPurpose.includes('thank')) {
+    result.message = 'thank you'
+  }
+
+  // Extract questions and convert to safer form
+  // "what time will you be home" -> "what time works best to reach you"
+  if (lowerPurpose.includes('what time') || lowerPurpose.includes('when')) {
+    result.originalQuestion = purpose
+    // Use safer phrasing by default
+    result.question = "What time works best to reach you tomorrow?"
+  }
+
+  // If no structured extraction and it's a simple message
+  if (!result.message && !result.question && purpose.length < 100) {
+    result.message = purpose
+  }
+
+  return result
+}
+
+/**
+ * Determine current call state based on conversation history
+ */
+function determineCallState(
   conversationHistory: ConversationTurn[],
+  parsedPurpose: ParsedPurpose,
   isOpening: boolean
-): Promise<AgentResponse> {
-  // Build context string
-  let contextStr = 'No specific context available - just have a friendly conversation.'
-  if (callContext) {
-    // Make the PURPOSE very prominent so the AI uses it
-    const purpose = callContext.intent_purpose || 'General conversation'
-    contextStr = `
-**PURPOSE OF THIS CALL**: ${purpose}
-Company/Person: ${callContext.company_name || 'Personal call'}
-Additional Info: ${JSON.stringify(callContext.gathered_info || {})}`
-    console.log('[voice-agent] Using call context:', { purpose, company: callContext.company_name })
-  } else {
-    console.log('[voice-agent] WARNING: No call context found!')
+): CallState {
+  const agentTurns = conversationHistory.filter(t => t.role === 'agent')
+  const humanTurns = conversationHistory.filter(t => t.role === 'human')
+  const lastHuman = humanTurns[humanTurns.length - 1]?.content?.toLowerCase() || ''
+
+  // Opening - no conversation yet
+  if (isOpening || agentTurns.length === 0) {
+    return 'greeting'
   }
 
-  // Build conversation history string
-  let historyStr = 'No conversation yet - this is the opening.'
-  if (conversationHistory.length > 0) {
-    historyStr = conversationHistory
-      .map(turn => `${turn.role === 'agent' ? 'You' : 'Them'}: ${turn.content}`)
-      .join('\n')
+  // Check for challenges or discomfort
+  const challengePhrases = [
+    'who is this', 'who are you', 'why are you calling',
+    'why do you need', 'why are you asking', "don't want to",
+    'not comfortable', 'how did you get', 'is this a scam',
+    'stop calling', 'not interested'
+  ]
+  if (challengePhrases.some(phrase => lastHuman.includes(phrase))) {
+    return 'challenged'
   }
 
-  const prompt = systemPrompt
-    .replace('{CALL_CONTEXT}', contextStr)
-    .replace('{CONVERSATION_HISTORY}', historyStr)
-
-  const userMessage = isOpening
-    ? 'Generate your opening statement for this call. Introduce yourself briefly and state why you\'re calling.'
-    : 'Generate your response to what they just said. Be natural and conversational.'
-
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${openaiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o',
-      messages: [
-        { role: 'system', content: prompt },
-        { role: 'user', content: userMessage }
-      ],
-      temperature: 0.8,
-      max_tokens: 200,
-      response_format: { type: 'json_object' },
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`OpenAI API error: ${await response.text()}`)
+  // Check for goodbye signals
+  const farewells = ['bye', 'goodbye', 'take care', 'talk later', 'have a good']
+  if (farewells.some(phrase => lastHuman.includes(phrase))) {
+    return 'closing'
   }
 
-  const data = await response.json()
-  const content = data.choices[0].message.content
+  // Check what we've already said
+  const agentSaid = agentTurns.map(t => t.content.toLowerCase()).join(' ')
 
+  const saidGreeting = agentSaid.includes('is this') || agentSaid.includes('hi,') || agentSaid.includes('hello')
+  const askedPermission = agentSaid.includes('good time') || agentSaid.includes('now ok')
+  const saidIdentity = agentSaid.includes('assistant') || agentSaid.includes('calling on behalf') || agentSaid.includes("'s assistant")
+  const deliveredMessage = parsedPurpose.message && (
+    agentSaid.includes('happy birthday') ||
+    agentSaid.includes('wanted to say') ||
+    agentSaid.includes('wanted to wish')
+  )
+  const askedQuestion = parsedPurpose.question && (
+    agentSaid.includes('what time') ||
+    agentSaid.includes('when')
+  )
+
+  // Check for answer to our question
+  const gotTimeAnswer = askedQuestion && humanTurns.length > 0 && (
+    lastHuman.match(/\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.?m\.?|p\.?m\.?)?/i) ||
+    lastHuman.includes('morning') ||
+    lastHuman.includes('afternoon') ||
+    lastHuman.includes('evening') ||
+    lastHuman.includes('tonight') ||
+    lastHuman.includes('tomorrow')
+  )
+
+  // Determine next state based on progression
+  if (!saidGreeting) return 'greeting'
+
+  // After greeting, check their response
+  if (saidGreeting && !saidIdentity) {
+    // They answered our "is this X?" question
+    const confirmedIdentity = lastHuman.includes('yes') || lastHuman.includes('yeah') || lastHuman.includes('speaking') || lastHuman.includes('this is')
+    const deniedIdentity = lastHuman.includes('no') || lastHuman.includes("wrong number") || lastHuman.includes("who")
+
+    if (deniedIdentity) {
+      return 'closing' // Wrong number
+    }
+    if (confirmedIdentity || humanTurns.length > 0) {
+      return 'identify' // Move to identifying ourselves
+    }
+  }
+
+  if (saidIdentity && !deliveredMessage && parsedPurpose.message) {
+    return 'deliver_message'
+  }
+
+  if ((deliveredMessage || !parsedPurpose.message) && !askedQuestion && parsedPurpose.question) {
+    return 'ask_question'
+  }
+
+  if (askedQuestion && gotTimeAnswer) {
+    return 'confirm'
+  }
+
+  // Default to closing if we've done everything
+  if ((deliveredMessage || !parsedPurpose.message) && (gotTimeAnswer || !parsedPurpose.question)) {
+    return 'closing'
+  }
+
+  // Stay in current flow
+  if (deliveredMessage) return 'closing'
+  if (saidIdentity) return 'deliver_message'
+  return 'identify'
+}
+
+/**
+ * Generate response for current state - ONE short utterance
+ */
+function generateStateResponse(
+  state: CallState,
+  parsedPurpose: ParsedPurpose,
+  lastHumanResponse: string | null
+): { response: string; end_call: boolean } {
+  const recipientName = parsedPurpose.recipientName
+  const callerName = parsedPurpose.callerName
+
+  switch (state) {
+    case 'greeting':
+      // FIRST LINE: Short identity check only
+      // RULE: Max 1 sentence, must include specific name if known
+      if (recipientName) {
+        return { response: `Hi, is this ${recipientName}?`, end_call: false }
+      }
+      return { response: `Hi there!`, end_call: false }
+
+    case 'identify':
+      // Introduce ourselves with specific name
+      // RULE: Never say "a friend" - use the actual caller name
+      if (callerName) {
+        return {
+          response: `Hi! This is ${callerName}'s assistant calling with a quick message. Is now a good time?`,
+          end_call: false
+        }
+      }
+      return {
+        response: `Hi! I'm calling with a quick message. Is now a good time?`,
+        end_call: false
+      }
+
+    case 'deliver_message':
+      // Deliver the message
+      if (parsedPurpose.message === 'happy birthday') {
+        if (callerName) {
+          return { response: `${callerName} wanted to wish you a happy birthday!`, end_call: false }
+        }
+        return { response: `I wanted to wish you a happy birthday!`, end_call: false }
+      }
+      if (parsedPurpose.message) {
+        if (callerName) {
+          return { response: `${callerName} wanted to say ${parsedPurpose.message}.`, end_call: false }
+        }
+        return { response: parsedPurpose.message, end_call: false }
+      }
+      return { response: `I just wanted to reach out.`, end_call: false }
+
+    case 'ask_question':
+      // Ask the question (use safer form)
+      if (parsedPurpose.question) {
+        return { response: parsedPurpose.question, end_call: false }
+      }
+      return { response: `Is there anything you'd like me to pass along?`, end_call: false }
+
+    case 'confirm':
+      // Confirm what we heard
+      if (lastHumanResponse) {
+        // Extract time from their response
+        const timeMatch = lastHumanResponse.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.?m\.?|p\.?m\.?)?)\b/i)
+        if (timeMatch) {
+          return { response: `Got it, around ${timeMatch[1]}. I'll let them know. Thanks!`, end_call: false }
+        }
+        // Check for relative times
+        if (lastHumanResponse.toLowerCase().includes('afternoon')) {
+          return { response: `Got it, sometime in the afternoon. I'll let them know. Thanks!`, end_call: false }
+        }
+        if (lastHumanResponse.toLowerCase().includes('evening')) {
+          return { response: `Got it, sometime in the evening. I'll let them know. Thanks!`, end_call: false }
+        }
+      }
+      return { response: `Got it, thanks for letting me know!`, end_call: false }
+
+    case 'closing':
+      // Polite goodbye - one sentence
+      return { response: `Thanks so much! Take care, bye!`, end_call: true }
+
+    case 'challenged':
+      // Exit gracefully when challenged
+      // RULE: Don't push, don't explain further, just exit politely
+      if (parsedPurpose.message === 'happy birthday' && callerName) {
+        return {
+          response: `No worries at all! I'll just pass along ${callerName}'s birthday wishes. Take care!`,
+          end_call: true
+        }
+      }
+      return {
+        response: `No worries! I'll let them know. Have a great day!`,
+        end_call: true
+      }
+
+    default:
+      return { response: `Thanks, have a great day!`, end_call: true }
+  }
+}
+
+// Log checkpoint for debugging
+async function logCheckpoint(
+  serviceClient: ReturnType<typeof createClient>,
+  callId: string,
+  checkpoint: string,
+  details?: Record<string, unknown>
+) {
   try {
-    const parsed = JSON.parse(content) as AgentResponse
-    return {
-      response: parsed.response || content,
-      end_call: parsed.end_call || false
-    }
-  } catch {
-    // If JSON parsing fails, treat as plain text response
-    return {
-      response: content,
-      end_call: false
-    }
+    await serviceClient.from('call_events').insert({
+      call_id: callId,
+      event_type: 'checkpoint',
+      description: checkpoint,
+      metadata: { checkpoint, timestamp: new Date().toISOString(), ...details }
+    })
+
+    // Also update pipeline_checkpoints on the call record
+    const { data: call } = await serviceClient
+      .from('calls')
+      .select('pipeline_checkpoints')
+      .eq('id', callId)
+      .single()
+
+    const checkpoints = call?.pipeline_checkpoints || {}
+    checkpoints[checkpoint] = new Date().toISOString()
+
+    await serviceClient.from('calls').update({
+      pipeline_checkpoints: checkpoints,
+      last_activity_at: new Date().toISOString()
+    }).eq('id', callId)
+  } catch (err) {
+    console.error('[voice-agent] Failed to log checkpoint:', err)
   }
 }
 
@@ -143,9 +328,10 @@ serve(async (req) => {
     console.log('[voice-agent] ========== REQUEST RECEIVED ==========')
 
     const body = await req.json()
-    const { call_id, transcription, is_opening } = body
+    const { call_id, transcription, is_opening, is_reprompt } = body
     console.log('[voice-agent] call_id:', call_id)
     console.log('[voice-agent] is_opening:', is_opening)
+    console.log('[voice-agent] is_reprompt:', is_reprompt)
     console.log('[voice-agent] transcription:', transcription?.substring(0, 100) || 'none')
 
     if (!call_id) {
@@ -162,18 +348,16 @@ serve(async (req) => {
     }
 
     const serviceClient = createClient(supabaseUrl, serviceRoleKey)
-
-    const openaiKey = Deno.env.get('OPENAI_API_KEY')
     const telnyxApiKey = Deno.env.get('TELNYX_API_KEY')
 
-    console.log('[voice-agent] API keys present:', { openai: !!openaiKey, telnyx: !!telnyxApiKey })
-
-    if (!openaiKey || !telnyxApiKey) {
-      console.error('[voice-agent] ERROR: Missing API keys')
-      throw new Error('Missing required API keys (OPENAI_API_KEY, TELNYX_API_KEY)')
+    // Log checkpoint: agent received request
+    if (is_opening) {
+      await logCheckpoint(serviceClient, call_id, 'first_tts_started', { is_opening })
+    } else {
+      await logCheckpoint(serviceClient, call_id, 'agent_decision_made', { has_transcription: !!transcription })
     }
 
-    // Get all call data in parallel for speed (saves ~300ms)
+    // Get all call data in parallel
     const [callResult, contextResult, transcriptionsResult, agentEventsResult] = await Promise.all([
       serviceClient.from('calls').select('*').eq('id', call_id).single(),
       serviceClient.from('call_contexts').select('*').eq('call_id', call_id).maybeSingle(),
@@ -182,9 +366,9 @@ serve(async (req) => {
     ])
 
     const call = callResult.data
-    const context = contextResult.data
-    const transcriptions = transcriptionsResult.data
-    const agentEvents = agentEventsResult.data
+    const context = contextResult.data as CallContext | null
+    const transcriptions = transcriptionsResult.data || []
+    const agentEvents = agentEventsResult.data || []
 
     if (!call) {
       throw new Error('Call not found')
@@ -193,15 +377,14 @@ serve(async (req) => {
     // Build conversation history
     const conversationHistory: ConversationTurn[] = []
 
-    // Merge transcriptions and agent speech into chronological order
     const allEvents = [
-      ...(transcriptions || []).map(t => ({
+      ...transcriptions.map(t => ({
         type: 'transcription' as const,
         content: t.content,
         speaker: t.speaker,
         created_at: t.created_at
       })),
-      ...(agentEvents || []).map(e => ({
+      ...agentEvents.map(e => ({
         type: 'agent' as const,
         content: e.description,
         speaker: 'agent',
@@ -212,7 +395,7 @@ serve(async (req) => {
     for (const event of allEvents) {
       if (event.type === 'transcription') {
         conversationHistory.push({
-          role: event.speaker === 'user' ? 'agent' : 'human',
+          role: event.speaker === 'agent' ? 'agent' : 'human',
           content: event.content,
           timestamp: event.created_at
         })
@@ -234,34 +417,71 @@ serve(async (req) => {
       })
     }
 
-    console.log('[voice-agent] Generating response for call:', call_id)
-    console.log('[voice-agent] Is opening:', is_opening)
     console.log('[voice-agent] Conversation history length:', conversationHistory.length)
 
-    // Generate AI response
-    const agentResponse = await generateResponse(
-      openaiKey,
-      context as CallContext | null,
-      conversationHistory,
-      is_opening
-    )
+    // Parse the purpose and determine state
+    const purpose = context?.intent_purpose || ''
+    const gatheredInfo = context?.gathered_info || {}
+    const parsedPurpose = parsePurpose(purpose, gatheredInfo)
 
-    const responseText = agentResponse.response
-    const shouldEndCall = agentResponse.end_call
+    console.log('[voice-agent] Parsed purpose:', parsedPurpose)
+
+    // Handle reprompt case
+    let responseText: string
+    let shouldEndCall: boolean
+    let callState: CallState
+
+    if (is_reprompt) {
+      // This is a reprompt due to silence
+      const repromptCount = call.reprompt_count || 0
+      console.log('[voice-agent] Reprompt #', repromptCount + 1)
+
+      if (repromptCount >= 2) {
+        // Too many reprompts, exit gracefully
+        responseText = "I seem to be having trouble hearing you. I'll follow up another time. Have a great day!"
+        shouldEndCall = true
+        callState = 'closing'
+
+        // Update reprompt count
+        await serviceClient.from('calls').update({
+          reprompt_count: repromptCount + 1
+        }).eq('id', call_id)
+      } else {
+        // Try reprompt
+        responseText = "Sorry, I didn't catch that. Could you repeat?"
+        shouldEndCall = false
+        callState = 'greeting' // Keep current state
+
+        // Update reprompt count
+        await serviceClient.from('calls').update({
+          reprompt_count: repromptCount + 1
+        }).eq('id', call_id)
+      }
+    } else {
+      // Normal conversation flow
+      callState = determineCallState(conversationHistory, parsedPurpose, is_opening)
+      console.log('[voice-agent] Current call state:', callState)
+
+      const lastHuman = conversationHistory.filter(t => t.role === 'human').pop()?.content || null
+      const stateResponse = generateStateResponse(callState, parsedPurpose, lastHuman)
+      responseText = stateResponse.response
+      shouldEndCall = stateResponse.end_call
+
+      // Reset reprompt count on successful conversation
+      if (transcription && transcription.length > 0) {
+        await serviceClient.from('calls').update({
+          reprompt_count: 0,
+          silence_started_at: null
+        }).eq('id', call_id)
+      }
+    }
 
     console.log('[voice-agent] Generated response:', responseText)
     console.log('[voice-agent] Should end call:', shouldEndCall)
 
-    // Play audio via Telnyx speak command (uses Telnyx's built-in TTS)
-    console.log('[voice-agent] Call data:', {
-      call_id: call.id,
-      telnyx_call_id: call.telnyx_call_id,
-      status: call.status
-    })
-
-    if (call.telnyx_call_id) {
+    // Send to Telnyx
+    if (call.telnyx_call_id && telnyxApiKey) {
       console.log('[voice-agent] Sending speak command to Telnyx...')
-      // Use Telnyx speak command
       const speakResponse = await fetch(
         `https://api.telnyx.com/v2/calls/${call.telnyx_call_id}/actions/speak`,
         {
@@ -286,9 +506,15 @@ serve(async (req) => {
       } else {
         console.log('[voice-agent] Speech successfully sent to Telnyx')
 
-        // If AI decided to end call, set closing state (don't hang up yet - wait for mutual goodbye)
+        // Log checkpoint: TTS started
+        if (is_opening) {
+          await logCheckpoint(serviceClient, call_id, 'first_tts_completed')
+        } else {
+          await logCheckpoint(serviceClient, call_id, 'second_tts_started')
+        }
+
         if (shouldEndCall) {
-          console.log('[voice-agent] AI said goodbye, entering closing_said state...')
+          console.log('[voice-agent] Entering closing state...')
           await serviceClient
             .from('calls')
             .update({
@@ -296,32 +522,32 @@ serve(async (req) => {
               closing_started_at: new Date().toISOString()
             })
             .eq('id', call_id)
-          console.log('[voice-agent] Call state updated to closing_said, waiting for mutual goodbye')
         }
       }
     } else {
-      console.error('[voice-agent] No telnyx_call_id found - cannot speak!')
+      console.error('[voice-agent] No telnyx_call_id or API key found!')
     }
 
-    // Log agent speech as event
+    // Log agent speech
     await serviceClient.from('call_events').insert({
       call_id,
       event_type: 'agent_speech',
       description: responseText,
-      metadata: { is_opening, end_call: shouldEndCall }
+      metadata: { is_opening, is_reprompt, end_call: shouldEndCall, state: callState }
     })
 
     return new Response(JSON.stringify({
       success: true,
       response: responseText,
-      end_call: shouldEndCall
+      end_call: shouldEndCall,
+      state: callState
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
 
   } catch (error) {
     console.error('[voice-agent] Error:', error)
-    return new Response(JSON.stringify({ error: error.message }), {
+    return new Response(JSON.stringify({ error: (error as Error).message }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })

@@ -19,6 +19,16 @@ export interface Call {
   duration_seconds?: number | null
   closing_state?: 'active' | 'closing_said' // For mutual goodbye mechanism
   closing_started_at?: string | null // When AI said goodbye
+  // Recap state - single source of truth
+  recap_status?: 'recap_ready' | 'recap_pending' | 'recap_failed_transient' | 'recap_failed_permanent'
+  recap_error_code?: string | null
+  recap_last_attempt_at?: string | null
+  recap_attempt_count?: number
+  // Pipeline state for debugging
+  pipeline_checkpoints?: Record<string, string | null>
+  last_activity_at?: string | null
+  silence_started_at?: string | null
+  reprompt_count?: number
 }
 
 export interface Transcription {
@@ -51,7 +61,7 @@ export interface Conversation {
 export interface CallEvent {
   id: string
   call_id: string
-  event_type: 'status_change' | 'dtmf_sent' | 'dtmf_received' | 'ivr_navigation' | 'transcription' | 'error' | 'agent_speech' | 'hangup' | 'connected' | 'ringing' | 'ended' | 'mutual_goodbye' | 'closing_aborted' | 'streaming' | 'realtime_api'
+  event_type: 'status_change' | 'dtmf_sent' | 'dtmf_received' | 'ivr_navigation' | 'transcription' | 'error' | 'agent_speech' | 'hangup' | 'connected' | 'ringing' | 'ended' | 'mutual_goodbye' | 'closing_aborted' | 'streaming' | 'realtime_api' | 'checkpoint' | 'transcription_started'
   description: string
   metadata: Record<string, unknown>
   created_at: string
@@ -65,6 +75,45 @@ export interface ChatFunction {
 // CallCard Data Contract
 export type CallCardStatus = 'in_progress' | 'completed' | 'no_answer' | 'busy' | 'failed' | 'voicemail' | 'canceled'
 export type ConfidenceLevel = 'high' | 'medium' | 'low'
+
+// ============================================================================
+// RECAP STATE MODEL - Single source of truth, mutually exclusive states
+// ============================================================================
+export type RecapStatus =
+  | 'recap_ready'             // Full recap available, show content
+  | 'recap_pending'           // Generating, show spinner
+  | 'recap_failed_transient'  // Temporary failure, can retry
+  | 'recap_failed_permanent'  // Permanent failure, no retry
+
+export interface RecapState {
+  status: RecapStatus
+  errorCode?: string          // For debugging/analytics
+  errorMessage?: string       // Internal only, not shown to user
+  lastAttemptAt?: string      // ISO timestamp
+  attemptCount: number
+}
+
+// ============================================================================
+// CALL PIPELINE CHECKPOINTS - For diagnosing call failures
+// ============================================================================
+export type CallCheckpoint =
+  | 'call_started'
+  | 'call_answered'
+  | 'first_tts_started'
+  | 'first_tts_completed'
+  | 'first_audio_received'
+  | 'first_asr_partial'
+  | 'first_asr_final'
+  | 'agent_decision_made'
+  | 'second_tts_started'
+  | 'call_ended'
+
+export interface CallPipelineState {
+  checkpoints: Record<CallCheckpoint, string | null> // ISO timestamp or null
+  lastActivity: string // ISO timestamp
+  silenceStartedAt: string | null // When we started waiting for response
+  repromptCount: number
+}
 
 export interface CallCardTakeaway {
   label: string

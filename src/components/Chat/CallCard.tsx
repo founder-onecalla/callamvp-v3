@@ -51,15 +51,13 @@ export default function CallCard() {
     hangUp,
     sendDtmf,
     callCardData,
-    summaryState,
-    summaryRequestedAt,
-    retryCount,
+    recapStatus,
     retrySummary,
   } = useCall()
 
   const [isExpanded, setIsExpanded] = useState(false)
   const [showKeypad, setShowKeypad] = useState(false)
-  const [duration, setDuration] = useState(0)
+  const [displayDuration, setDisplayDuration] = useState(0)
 
   const {
     isConnected: isListening,
@@ -70,25 +68,59 @@ export default function CallCard() {
     callId: currentCall?.id ?? null,
   })
 
-  // Duration timer - reset when not answered, increment when answered
+  // ============================================================================
+  // DURATION TIMER - Computed from timestamps, NOT free-running
+  // ============================================================================
+  // This ensures the timer cannot run past the actual call end time.
+  // If ended_at exists, duration is fixed. Otherwise, compute from now.
+  // ============================================================================
   useEffect(() => {
-    if (currentCall?.status !== 'answered') {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset is intentional on status change
-      setDuration(0)
-      return
+    // Helper to compute duration from timestamps
+    const computeDuration = (): number => {
+      if (!currentCall?.started_at) return 0
+      
+      const startTime = new Date(currentCall.started_at).getTime()
+      
+      // If call has ended_at, use that as the end time (INVARIANT: ended_at means call is over)
+      if (currentCall.ended_at) {
+        const endTime = new Date(currentCall.ended_at).getTime()
+        return Math.max(0, Math.floor((endTime - startTime) / 1000))
+      }
+      
+      // Live call - compute from current time
+      return Math.max(0, Math.floor((Date.now() - startTime) / 1000))
     }
 
+    // Initial computation
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Sync initial value from timestamps
+    setDisplayDuration(computeDuration())
+
+    // Only tick if call is answered AND not yet ended
+    const isLive = currentCall?.status === 'answered' && !currentCall?.ended_at
+    if (!isLive) {
+      return // No interval needed - duration is fixed or call not started
+    }
+
+    // Update every second for live calls
     const interval = setInterval(() => {
-      setDuration((d) => d + 1)
+      setDisplayDuration(computeDuration())
     }, 1000)
 
     return () => clearInterval(interval)
-  }, [currentCall?.status])
+  }, [currentCall?.status, currentCall?.started_at, currentCall?.ended_at])
 
   if (!currentCall) return null
+  
+  // ============================================================================
+  // INVARIANT: If ended_at exists, treat call as ended regardless of status field
+  // ============================================================================
+  // This safeguard ensures UI shows "Ended" even if Realtime missed the status update.
+  // The ended_at timestamp from DB is authoritative.
+  // ============================================================================
+  const isCallEnded = currentCall.status === 'ended' || !!currentCall.ended_at
 
-  const minutes = Math.floor(duration / 60)
-  const seconds = duration % 60
+  const minutes = Math.floor(displayDuration / 60)
+  const seconds = displayDuration % 60
   const timeDisplay = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
 
   // Build transcript turns from ASR (them) and agent_speech events (our agent)
@@ -112,7 +144,7 @@ export default function CallCard() {
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 
   // If call ended and user wants expanded view
-  if (currentCall.status === 'ended' && isExpanded) {
+  if (isCallEnded && isExpanded) {
     // If we have full callCardData, show the rich expanded view
     if (callCardData) {
       return <CallCardExpanded data={callCardData} onCollapse={() => setIsExpanded(false)} />
@@ -129,7 +161,8 @@ export default function CallCard() {
   }
 
   // If call ended - show recap card with progressive loading
-  if (currentCall.status === 'ended') {
+  // Uses isCallEnded which checks BOTH status AND ended_at for robustness
+  if (isCallEnded) {
     // Calculate duration from call data
     let callDuration: number | null = null
     if (currentCall.started_at && currentCall.ended_at) {
@@ -149,10 +182,8 @@ export default function CallCard() {
         duration={callDuration}
         endedAt={currentCall.ended_at}
         transcriptTurns={transcriptTurns}
+        recapStatus={recapStatus}
         callCardData={callCardData}
-        summaryState={summaryState}
-        summaryRequestedAt={summaryRequestedAt}
-        retryCount={retryCount}
         onRetry={retrySummary}
         onExpand={() => setIsExpanded(true)}
       />

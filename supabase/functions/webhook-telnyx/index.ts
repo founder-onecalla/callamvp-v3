@@ -6,6 +6,16 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// ============================================================================
+// WEBHOOK HANDLER - With Checkpoint Logging and Silence Watchdog
+// ============================================================================
+// This handler logs all pipeline checkpoints and implements a watchdog timer
+// to detect and handle silence (no ASR after TTS).
+// ============================================================================
+
+// Silence timeout in milliseconds (3 seconds)
+const SILENCE_TIMEOUT_MS = 3000
+
 interface IvrStep {
   step: number
   prompt: string
@@ -27,7 +37,7 @@ interface IvrPath {
   menu_path: IvrStep[]
 }
 
-// Helper to log call events for live status updates
+// Helper to log call events
 async function logCallEvent(
   serviceClient: ReturnType<typeof createClient>,
   callId: string,
@@ -44,6 +54,45 @@ async function logCallEvent(
     })
   } catch (error) {
     console.error('Failed to log call event:', error)
+  }
+}
+
+// Log checkpoint with timestamp
+async function logCheckpoint(
+  serviceClient: ReturnType<typeof createClient>,
+  callId: string,
+  checkpoint: string,
+  details?: Record<string, unknown>
+) {
+  try {
+    const timestamp = new Date().toISOString()
+
+    // Log as event
+    await serviceClient.from('call_events').insert({
+      call_id: callId,
+      event_type: 'checkpoint',
+      description: checkpoint,
+      metadata: { checkpoint, timestamp, ...details }
+    })
+
+    // Update pipeline_checkpoints on call record
+    const { data: call } = await serviceClient
+      .from('calls')
+      .select('pipeline_checkpoints')
+      .eq('id', callId)
+      .single()
+
+    const checkpoints = call?.pipeline_checkpoints || {}
+    checkpoints[checkpoint] = timestamp
+
+    await serviceClient.from('calls').update({
+      pipeline_checkpoints: checkpoints,
+      last_activity_at: timestamp
+    }).eq('id', callId)
+
+    console.log(`[webhook] Checkpoint: ${checkpoint}`, details || '')
+  } catch (err) {
+    console.error('[webhook] Failed to log checkpoint:', err)
   }
 }
 
@@ -68,8 +117,6 @@ async function sendDtmf(
       }
     )
     console.log(`Sent DTMF: ${digits}`)
-
-    // Log the DTMF event
     await logCallEvent(serviceClient, callId, 'dtmf_sent', `Pressed ${digits}`, { digits })
   } catch (error) {
     console.error('Failed to send DTMF:', error)
@@ -82,7 +129,7 @@ function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-// Farewell phrases - high confidence (auto-hangup when in closing_said state)
+// Farewell phrases for mutual goodbye detection
 const FAREWELL_PHRASES = [
   'bye', 'goodbye', 'good bye', 'talk to you later', 'have a good day',
   'have a good one', 'thanks bye', 'thank you bye', 'ok bye', 'okay bye',
@@ -97,31 +144,15 @@ const CONTINUATION_MARKERS = [
   'also', 'oh wait', 'sorry', 'one second'
 ]
 
-// Check if text contains a farewell
 function isFarewell(text: string): boolean {
   const lower = text.toLowerCase().trim()
-  // Check for farewell phrases
-  for (const phrase of FAREWELL_PHRASES) {
-    if (lower.includes(phrase)) {
-      return true
-    }
-  }
-  return false
+  return FAREWELL_PHRASES.some(phrase => lower.includes(phrase))
 }
 
-// Check if text contains continuation markers
 function isContinuation(text: string): boolean {
   const lower = text.toLowerCase().trim()
-  // Check for continuation markers
-  for (const marker of CONTINUATION_MARKERS) {
-    if (lower.includes(marker)) {
-      return true
-    }
-  }
-  // Also check for question marks (likely asking something new)
-  if (lower.includes('?')) {
-    return true
-  }
+  if (CONTINUATION_MARKERS.some(marker => lower.includes(marker))) return true
+  if (lower.includes('?')) return true
   return false
 }
 
@@ -150,6 +181,7 @@ async function hangupCall(
 
     if (response.ok) {
       console.log(`[webhook] Hangup successful: ${reason}`)
+      await logCheckpoint(serviceClient, callId, 'call_ended', { reason })
       await logCallEvent(serviceClient, callId, 'hangup', `Call ended: ${reason}`, { reason })
     } else {
       console.error(`[webhook] Hangup failed:`, await response.text())
@@ -165,11 +197,11 @@ async function triggerVoiceAgent(
   serviceRoleKey: string,
   callId: string,
   transcription?: string,
-  isOpening = false
+  isOpening = false,
+  isReprompt = false
 ) {
   const url = `${supabaseUrl}/functions/v1/voice-agent`
-  console.log('[webhook] triggerVoiceAgent: Calling', url)
-  console.log('[webhook] triggerVoiceAgent: call_id:', callId, 'isOpening:', isOpening)
+  console.log('[webhook] triggerVoiceAgent:', { callId, isOpening, isReprompt, hasTranscription: !!transcription })
 
   try {
     const response = await fetch(url, {
@@ -182,22 +214,22 @@ async function triggerVoiceAgent(
         call_id: callId,
         transcription,
         is_opening: isOpening,
+        is_reprompt: isReprompt,
       }),
     })
 
     const responseText = await response.text()
-    console.log('[webhook] triggerVoiceAgent: Response status:', response.status)
-    console.log('[webhook] triggerVoiceAgent: Response body:', responseText.substring(0, 500))
+    console.log('[webhook] triggerVoiceAgent response:', response.status, responseText.substring(0, 200))
 
     if (!response.ok) {
-      console.error('[webhook] triggerVoiceAgent: FAILED with status', response.status)
+      console.error('[webhook] triggerVoiceAgent FAILED:', response.status)
       throw new Error(`Voice agent returned ${response.status}: ${responseText}`)
     }
 
-    console.log('[webhook] triggerVoiceAgent: SUCCESS')
+    console.log('[webhook] triggerVoiceAgent SUCCESS')
     return JSON.parse(responseText)
   } catch (error) {
-    console.error('[webhook] triggerVoiceAgent: ERROR:', error)
+    console.error('[webhook] triggerVoiceAgent ERROR:', error)
     throw error
   }
 }
@@ -211,6 +243,10 @@ async function startTranscription(
 ) {
   try {
     console.log('[webhook] Starting transcription for call:', callControlId)
+    console.log('[webhook] transcription_start config:', JSON.stringify({
+      language: 'en',
+      transcription_tracks: 'both',
+    }))
 
     const response = await fetch(
       `https://api.telnyx.com/v2/calls/${callControlId}/actions/transcription_start`,
@@ -220,29 +256,119 @@ async function startTranscription(
           'Authorization': `Bearer ${telnyxApiKey}`,
           'Content-Type': 'application/json',
         },
+        // CRITICAL: transcription_tracks must capture both legs
+        // 'both' = inbound (us) + outbound (them)
+        // Alternative: If 'both' doesn't work, we may need 'outbound' to get callee audio
         body: JSON.stringify({
           language: 'en',
-          transcription_tracks: 'both', // Transcribe both sides of the conversation
+          transcription_tracks: 'both',
+          // Enable interim results to get faster feedback
+          interim_results: true,
         }),
       }
     )
 
     const responseText = await response.text()
+    console.log('[webhook] transcription_start response status:', response.status)
+    console.log('[webhook] transcription_start response body:', responseText)
 
     if (!response.ok) {
-      console.error('[webhook] Failed to start transcription:', responseText)
-      await logCallEvent(serviceClient, callId, 'error', 'Failed to start transcription', { error: responseText })
+      console.error('[webhook] ❌ FAILED to start transcription:', responseText)
+      await logCallEvent(serviceClient, callId, 'error', 'Failed to start transcription', {
+        error: responseText,
+        status: response.status
+      })
+      await logCheckpoint(serviceClient, callId, 'transcription_start_failed', {
+        error: responseText,
+        status: response.status
+      })
     } else {
-      console.log('[webhook] Transcription started successfully:', responseText)
-      await logCallEvent(serviceClient, callId, 'transcription_started', 'Listening to conversation', {})
+      console.log('[webhook] ✅ Transcription started successfully')
+      await logCheckpoint(serviceClient, callId, 'transcription_started', {
+        config: { language: 'en', transcription_tracks: 'both' },
+        response: responseText
+      })
+      await logCallEvent(serviceClient, callId, 'transcription_started', 'Listening to conversation (both tracks)', {
+        config: { language: 'en', transcription_tracks: 'both' }
+      })
+
+      // Initialize audio health tracking
+      await serviceClient.from('calls').update({
+        inbound_audio_health: {
+          transcription_started: true,
+          started_at: new Date().toISOString(),
+          self_transcripts_received: 0,
+          remote_transcripts_received: 0,
+          last_self_transcript_at: null,
+          last_remote_transcript_at: null,
+        }
+      }).eq('id', callId)
     }
   } catch (error) {
-    console.error('[webhook] Transcription start error:', error)
+    console.error('[webhook] ❌ Transcription start exception:', error)
+    await logCheckpoint(serviceClient, callId, 'transcription_start_exception', { error: String(error) })
+  }
+}
+
+// Set up silence watchdog - will trigger reprompt if no ASR within timeout
+async function startSilenceWatchdog(
+  serviceClient: ReturnType<typeof createClient>,
+  callId: string
+) {
+  try {
+    await serviceClient.from('calls').update({
+      silence_started_at: new Date().toISOString()
+    }).eq('id', callId)
+    console.log('[webhook] Silence watchdog started for call:', callId)
+  } catch (err) {
+    console.error('[webhook] Failed to start silence watchdog:', err)
+  }
+}
+
+// Check if silence watchdog should trigger reprompt
+async function checkSilenceWatchdog(
+  serviceClient: ReturnType<typeof createClient>,
+  callId: string,
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  telnyxApiKey: string
+): Promise<boolean> {
+  try {
+    const { data: call } = await serviceClient
+      .from('calls')
+      .select('silence_started_at, reprompt_count, telnyx_call_id, status, closing_state')
+      .eq('id', callId)
+      .single()
+
+    if (!call || call.status !== 'answered' || call.closing_state === 'closing_said') {
+      return false
+    }
+
+    if (!call.silence_started_at) {
+      return false
+    }
+
+    const silenceStarted = new Date(call.silence_started_at)
+    const now = new Date()
+    const silenceMs = now.getTime() - silenceStarted.getTime()
+
+    if (silenceMs >= SILENCE_TIMEOUT_MS) {
+      console.log(`[webhook] Silence timeout reached (${silenceMs}ms), triggering reprompt`)
+      await logCheckpoint(serviceClient, callId, 'silence_timeout', { silenceMs })
+
+      // Trigger reprompt
+      await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, false, true)
+      return true
+    }
+
+    return false
+  } catch (err) {
+    console.error('[webhook] Failed to check silence watchdog:', err)
+    return false
   }
 }
 
 serve(async (req) => {
-  // Log EVERY request to this function
   console.log('[webhook-telnyx] ========== REQUEST RECEIVED ==========')
   console.log('[webhook-telnyx] Method:', req.method)
   console.log('[webhook-telnyx] URL:', req.url)
@@ -252,7 +378,7 @@ serve(async (req) => {
     return new Response('ok', { headers: corsHeaders })
   }
 
-  // Simple health check for GET requests
+  // Health check for GET requests
   if (req.method === 'GET') {
     console.log('[webhook-telnyx] Health check - responding OK')
     return new Response(JSON.stringify({ status: 'ok', message: 'Webhook is accessible' }), {
@@ -271,11 +397,21 @@ serve(async (req) => {
 
     console.log('[webhook-telnyx] ========== TELNYX EVENT ==========')
     console.log('[webhook-telnyx] Event type:', eventType)
+    console.log('[webhook-telnyx] Event ID:', event?.id)
+    console.log('[webhook-telnyx] Occurred at:', event?.occurred_at)
+    console.log('[webhook-telnyx] Record type:', event?.record_type)
 
-    const serviceClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    )
+    // Log all transcription-related events with full payload for diagnosis
+    if (eventType?.includes('transcription')) {
+      console.log('[webhook-telnyx] ====== TRANSCRIPTION EVENT FULL DUMP ======')
+      console.log('[webhook-telnyx] FULL EVENT:', JSON.stringify(event, null, 2))
+      console.log('[webhook-telnyx] =============================================')
+    }
+
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+
+    const serviceClient = createClient(supabaseUrl, serviceRoleKey)
 
     // Decode client state to get our call_id
     let callId: string | null = null
@@ -316,6 +452,7 @@ serve(async (req) => {
 
     switch (eventType) {
       case 'call.initiated':
+        await logCheckpoint(serviceClient, callId, 'call_started')
         await serviceClient
           .from('calls')
           .update({
@@ -323,139 +460,49 @@ serve(async (req) => {
             telnyx_call_id: event.payload.call_control_id,
           })
           .eq('id', callId)
-
         await logCallEvent(serviceClient, callId, 'status_change', 'Ringing...', { status: 'ringing' })
         break
 
       case 'call.answered':
+        await logCheckpoint(serviceClient, callId, 'call_answered')
         await serviceClient
           .from('calls')
           .update({
             status: 'answered',
             started_at: new Date().toISOString(),
+            reprompt_count: 0,
+            silence_started_at: null,
           })
           .eq('id', callId)
 
         await logCallEvent(serviceClient, callId, 'status_change', 'Call connected', { status: 'answered' })
 
-        // Check if using OpenAI Realtime API bridge
-        const audioBridgeUrl = Deno.env.get('AUDIO_BRIDGE_URL')
-        const audioRelayUrl = Deno.env.get('AUDIO_RELAY_URL')
+        // Legacy mode: Telnyx transcription + voice-agent function
+        console.log('[webhook] ========== CALL ANSWERED - STARTING PIPELINE ==========')
 
-        // TEMPORARILY DISABLED: Audio bridge has connectivity issues with Deno Deploy
-        // Force legacy mode until we fix the WebSocket connection issue
-        const useAudioBridge = false // was: audioBridgeUrl && telnyxApiKey
+        if (telnyxApiKey && callId) {
+          // Start transcription first
+          console.log('[webhook] Step 1: Starting transcription...')
+          await startTranscription(event.payload.call_control_id, telnyxApiKey, callId, serviceClient)
 
-        if (useAudioBridge && audioBridgeUrl && telnyxApiKey) {
-          // Using OpenAI Realtime API - stream audio to bridge
-          // Bridge handles: audio conversion, OpenAI communication, transcript capture
+          // Trigger voice agent opening greeting
+          console.log('[webhook] Step 2: Triggering voice agent opening...')
           try {
-            // Convert https:// to wss:// for WebSocket streaming
-            const wssBridgeUrl = audioBridgeUrl.replace(/^https?:\/\//, 'wss://')
-            const streamUrl = `${wssBridgeUrl}/telnyx-stream?call_id=${callId}`
+            await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, true, false)
+            console.log('[webhook] Voice agent trigger completed')
 
-            // Notify bridge to prepare session
-            await fetch(`${audioBridgeUrl}/start-session`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ call_id: callId })
-            })
-
-            // Start Telnyx media streaming to bridge
-            // Using JSON WebSocket format (not RTP) for bidirectional audio
-            const streamResponse = await fetch(
-              `https://api.telnyx.com/v2/calls/${event.payload.call_control_id}/actions/streaming_start`,
-              {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${telnyxApiKey}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  stream_url: streamUrl,
-                  stream_track: 'both_tracks',
-                }),
-              }
-            )
-
-            const streamResult = await streamResponse.text()
-            console.log(`[webhook] Telnyx streaming_start response:`, streamResult)
-            console.log(`[webhook] Started Realtime API streaming for call ${callId} to ${streamUrl}`)
-            await logCallEvent(serviceClient, callId, 'realtime_api', 'Voice AI connected via Realtime API', { bridge_url: audioBridgeUrl, stream_url: streamUrl })
-
-            // DON'T start Telnyx transcription - OpenAI Realtime handles it
-            // DON'T trigger voice-agent - OpenAI Realtime handles responses
-
-          } catch (bridgeError) {
-            console.error('[webhook] Failed to start Realtime API bridge:', bridgeError)
-            await logCallEvent(serviceClient, callId, 'error', 'Failed to connect Voice AI', { error: String(bridgeError) })
-
-            // Fallback to legacy voice agent
-            if (telnyxApiKey && callId) {
-              await startTranscription(event.payload.call_control_id, telnyxApiKey, callId, serviceClient)
-            }
+            // Start silence watchdog after TTS is sent
+            await startSilenceWatchdog(serviceClient, callId)
+          } catch (voiceErr) {
+            console.error('[webhook] Voice agent trigger FAILED:', voiceErr)
+            await logCallEvent(serviceClient, callId, 'error', 'Failed to trigger voice agent', { error: String(voiceErr) })
           }
         } else {
-          // Legacy mode: Telnyx transcription + voice-agent function
-          console.log('[webhook] ========== CALL ANSWERED - LEGACY MODE ==========')
-          console.log('[webhook] call_id:', callId)
-          console.log('[webhook] call_control_id:', event.payload.call_control_id)
-
-          if (telnyxApiKey && callId) {
-            console.log('[webhook] Starting transcription...')
-            await startTranscription(event.payload.call_control_id, telnyxApiKey, callId, serviceClient)
-            console.log('[webhook] Transcription start command sent')
-          } else {
-            console.error('[webhook] Cannot start transcription - missing telnyxApiKey or callId')
-          }
-
-          // Trigger voice agent opening greeting immediately
-          const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
-          const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-
-          console.log('[webhook] Supabase URL:', supabaseUrl ? 'present' : 'MISSING')
-          console.log('[webhook] Service role key:', serviceRoleKey ? 'present' : 'MISSING')
-
-          if (!supabaseUrl || !serviceRoleKey) {
-            console.error('[webhook] ERROR: Cannot trigger voice agent - missing credentials!')
-          } else {
-            console.log('[webhook] Triggering voice agent opening greeting for call:', callId)
-            try {
-              await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, true)
-              console.log('[webhook] Voice agent trigger completed successfully')
-            } catch (voiceErr) {
-              console.error('[webhook] Voice agent trigger FAILED:', voiceErr)
-            }
-          }
-
-          // Start media streaming for Listen In feature (legacy audio relay)
-          if (audioRelayUrl && telnyxApiKey) {
-            try {
-              const streamUrl = `${audioRelayUrl}?call_id=${callId}&type=telnyx`
-              await fetch(
-                `https://api.telnyx.com/v2/calls/${event.payload.call_control_id}/actions/streaming_start`,
-                {
-                  method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${telnyxApiKey}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({
-                    stream_url: streamUrl,
-                    stream_track: 'both_tracks',
-                  }),
-                }
-              )
-              console.log(`Started streaming for call ${callId} to ${streamUrl}`)
-            } catch (streamError) {
-              console.error('Failed to start streaming:', streamError)
-            }
-          }
+          console.error('[webhook] Cannot start pipeline - missing telnyxApiKey or callId')
         }
 
         // Check for IVR path and auto-navigate
         if (telnyxApiKey) {
-          // Get call context with IVR path
           const { data: context } = await serviceClient
             .from('call_contexts')
             .select('id, ivr_path_id, gathered_info, status')
@@ -463,7 +510,6 @@ serve(async (req) => {
             .maybeSingle() as { data: CallContext | null }
 
           if (context?.ivr_path_id) {
-            // Get the IVR path
             const { data: ivrPath } = await serviceClient
               .from('ivr_paths')
               .select('id, company_name, department, menu_path')
@@ -471,55 +517,40 @@ serve(async (req) => {
               .single() as { data: IvrPath | null }
 
             if (ivrPath?.menu_path && Array.isArray(ivrPath.menu_path)) {
-              console.log(`Starting IVR navigation for ${ivrPath.company_name} - ${ivrPath.department}`)
-
+              console.log(`Starting IVR navigation for ${ivrPath.company_name}`)
               await logCallEvent(serviceClient, callId, 'ivr_navigation', `Navigating ${ivrPath.company_name} phone menu`, {
                 company: ivrPath.company_name,
                 department: ivrPath.department
               })
 
-              // Update context status
               await serviceClient
                 .from('call_contexts')
                 .update({ status: 'in_call' })
                 .eq('id', context.id)
 
-              // Navigate IVR menu steps with delays
               for (const step of ivrPath.menu_path) {
-                // Wait for IVR prompt to play
                 await delay(3000)
 
                 let digits = step.action
-
-                // Check if action requires dynamic input from gathered info
                 if (step.action.includes('_')) {
-                  // Action like "account_number" means use gathered info
                   const infoKey = step.action
                   if (context.gathered_info && context.gathered_info[infoKey]) {
                     digits = context.gathered_info[infoKey]
-                    await logCallEvent(serviceClient, callId, 'ivr_navigation', `Entering ${infoKey.replace(/_/g, ' ')}`, { step: step.step })
                   } else {
-                    console.log(`Missing gathered info for: ${infoKey}, skipping step`)
-                    await logCallEvent(serviceClient, callId, 'ivr_navigation', `Waiting - need ${infoKey.replace(/_/g, ' ')}`, { step: step.step, missing: infoKey })
                     continue
                   }
-                } else {
-                  await logCallEvent(serviceClient, callId, 'ivr_navigation', step.note, { step: step.step, digits })
                 }
 
-                console.log(`IVR Step ${step.step}: ${step.note} - sending ${digits}`)
                 await sendDtmf(event.payload.call_control_id, digits, telnyxApiKey, serviceClient, callId)
               }
 
-              await logCallEvent(serviceClient, callId, 'ivr_navigation', 'Menu navigation complete, connecting to representative...', {})
-              console.log('IVR navigation complete')
+              await logCallEvent(serviceClient, callId, 'ivr_navigation', 'Menu navigation complete', {})
             }
           }
         }
         break
 
       case 'call.hangup': {
-        // Get the call to calculate duration
         const { data: existingCall } = await serviceClient
           .from('calls')
           .select('started_at, amd_result')
@@ -534,13 +565,11 @@ serve(async (req) => {
           durationSeconds = Math.floor((endedAt.getTime() - startedAt.getTime()) / 1000)
         }
 
-        // Determine outcome based on hangup cause and AMD result
         const hangupCause = event.payload?.hangup_cause || 'normal'
         let outcome = 'completed'
         let hangupDescription = 'Call ended'
 
         if (hangupCause === 'normal_clearing' || hangupCause === 'normal') {
-          // Check if it was a voicemail based on stored AMD result
           outcome = existingCall?.amd_result === 'machine' ? 'voicemail' : 'completed'
           hangupDescription = outcome === 'voicemail' ? 'Left voicemail' : 'Call completed'
         } else if (hangupCause === 'busy') {
@@ -556,6 +585,8 @@ serve(async (req) => {
           outcome = 'cancelled'
           hangupDescription = 'Call cancelled'
         }
+
+        await logCheckpoint(serviceClient, callId, 'call_ended', { hangupCause, outcome })
 
         await serviceClient
           .from('calls')
@@ -574,7 +605,6 @@ serve(async (req) => {
           duration_seconds: durationSeconds
         })
 
-        // Update call context status
         await serviceClient
           .from('call_contexts')
           .update({ status: 'completed' })
@@ -583,23 +613,57 @@ serve(async (req) => {
       }
 
       case 'call.transcription': {
-        // Handle real-time transcription from Telnyx
         const transcription = event.payload.transcription_data
 
-        // Log full transcription payload for debugging
-        console.log('[webhook] Transcription event received:', JSON.stringify({
-          leg: event.payload.leg,
-          transcript: transcription?.transcript,
-          is_final: transcription?.is_final,
-          confidence: transcription?.confidence,
-          full_payload: event.payload
-        }))
+        // ============================================================
+        // CRITICAL DIAGNOSTIC: Log FULL transcription event payload
+        // This will tell us exactly what leg values Telnyx is sending
+        // ============================================================
+        console.log('[webhook] ========== TRANSCRIPTION EVENT ==========')
+        console.log('[webhook] FULL payload:', JSON.stringify(event.payload, null, 2))
+        console.log('[webhook] Key fields:')
+        console.log('[webhook]   - leg:', event.payload.leg)
+        console.log('[webhook]   - transcript:', transcription?.transcript)
+        console.log('[webhook]   - is_final:', transcription?.is_final)
+        console.log('[webhook]   - confidence:', transcription?.confidence)
+        console.log('[webhook]   - call_control_id:', event.payload.call_control_id)
+
+        // Update audio health tracking - count received transcripts per leg
+        try {
+          const { data: healthData } = await serviceClient
+            .from('calls')
+            .select('inbound_audio_health')
+            .eq('id', callId)
+            .single()
+
+          const health = healthData?.inbound_audio_health || {
+            transcription_started: false,
+            self_transcripts_received: 0,
+            remote_transcripts_received: 0,
+          }
+
+          const legValue = event.payload.leg
+          const isRemote = legValue !== 'self'
+
+          if (isRemote) {
+            health.remote_transcripts_received = (health.remote_transcripts_received || 0) + 1
+            health.last_remote_transcript_at = new Date().toISOString()
+            health.last_remote_leg_value = legValue  // Track what value Telnyx sends
+            console.log('[webhook] 🎤 REMOTE AUDIO RECEIVED! leg value:', legValue)
+          } else {
+            health.self_transcripts_received = (health.self_transcripts_received || 0) + 1
+            health.last_self_transcript_at = new Date().toISOString()
+            console.log('[webhook] 🔊 Self audio received (our TTS)')
+          }
+
+          await serviceClient.from('calls').update({
+            inbound_audio_health: health
+          }).eq('id', callId)
+        } catch (healthErr) {
+          console.error('[webhook] Failed to update audio health:', healthErr)
+        }
 
         if (transcription?.transcript && transcription.transcript.trim().length > 0) {
-          // Determine speaker based on leg
-          // For OUTBOUND calls (we're calling them):
-          // - 'self' = our side (AI agent speaking)
-          // - anything else = the person we called (remote party)
           const isOurAI = event.payload.leg === 'self'
           const speaker = isOurAI ? 'agent' : 'remote'
 
@@ -611,7 +675,27 @@ serve(async (req) => {
             text: transcription.transcript.substring(0, 50)
           })
 
-          // Only store final transcriptions to avoid duplicates
+          // Log checkpoint for first ASR
+          if (!isOurAI) {
+            const { data: call } = await serviceClient
+              .from('calls')
+              .select('pipeline_checkpoints')
+              .eq('id', callId)
+              .single()
+
+            const checkpoints = call?.pipeline_checkpoints || {}
+            if (!checkpoints['first_asr_partial'] && transcription.is_final === false) {
+              await logCheckpoint(serviceClient, callId, 'first_asr_partial')
+            } else if (!checkpoints['first_asr_final'] && transcription.is_final !== false) {
+              await logCheckpoint(serviceClient, callId, 'first_asr_final')
+              // Also log first audio received
+              if (!checkpoints['first_audio_received']) {
+                await logCheckpoint(serviceClient, callId, 'first_audio_received')
+              }
+            }
+          }
+
+          // Only store final transcriptions
           if (transcription.is_final !== false) {
             await serviceClient.from('transcriptions').insert({
               call_id: callId,
@@ -627,7 +711,13 @@ serve(async (req) => {
           if (!isOurAI && isFinal) {
             const transcriptText = transcription.transcript
 
-            // Get the current call state to check if we're in closing mode
+            // Clear silence watchdog - we got a response
+            await serviceClient.from('calls').update({
+              silence_started_at: null,
+              last_activity_at: new Date().toISOString()
+            }).eq('id', callId)
+
+            // Get the current call state
             const { data: callData } = await serviceClient
               .from('calls')
               .select('closing_state, closing_started_at, telnyx_call_id')
@@ -635,88 +725,65 @@ serve(async (req) => {
               .single()
 
             const isClosing = callData?.closing_state === 'closing_said'
-            const closingStartedAt = callData?.closing_started_at ? new Date(callData.closing_started_at) : null
 
-            console.log('[webhook] Call state:', {
-              isClosing,
-              closingStartedAt: closingStartedAt?.toISOString(),
-              transcriptText
-            })
+            console.log('[webhook] Call state:', { isClosing, transcriptText })
 
             if (isClosing && telnyxApiKey && callData?.telnyx_call_id) {
-              // We're in closing mode - check for farewell or continuation
+              // In closing mode - check for farewell or continuation
 
               if (isContinuation(transcriptText)) {
-                // User wants to continue - abort closing, return to active
                 console.log('[webhook] Continuation detected, aborting closing')
                 await serviceClient
                   .from('calls')
                   .update({ closing_state: 'active', closing_started_at: null })
                   .eq('id', callId)
 
-                await logCallEvent(serviceClient, callId, 'closing_aborted', 'User has more to say, continuing call', {})
-
-                // Trigger voice agent to respond
-                const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
-                const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-                await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, transcriptText, false)
+                await logCallEvent(serviceClient, callId, 'closing_aborted', 'User has more to say', {})
+                await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, transcriptText, false, false)
 
               } else if (isFarewell(transcriptText)) {
-                // User said goodbye - hang up after short grace period
-                console.log('[webhook] Farewell detected, hanging up after grace period')
+                console.log('[webhook] Farewell detected, hanging up')
                 await logCallEvent(serviceClient, callId, 'mutual_goodbye', 'Mutual goodbye detected', {
                   user_farewell: transcriptText
                 })
 
-                // Wait 1 second grace period to let their last word finish
-                await delay(1000)
+                await delay(1000) // Grace period
                 await hangupCall(callData.telnyx_call_id, telnyxApiKey, serviceClient, callId, 'MUTUAL_GOODBYE')
 
               } else {
-                // Not a clear farewell or continuation - respond but stay in closing
-                console.log('[webhook] Ambiguous response in closing mode, responding but staying in closing')
-
-                const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
-                const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-                await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, transcriptText, false)
+                console.log('[webhook] Ambiguous response in closing mode')
+                await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, transcriptText, false, false)
               }
 
             } else {
-              // Normal conversation mode - trigger voice agent
+              // Normal conversation mode
               console.log('[webhook] Remote party spoke, triggering voice agent response')
-              console.log('[webhook] Their words:', transcriptText)
+              await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, transcriptText, false, false)
 
-              const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
-              const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-              await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, transcriptText, false)
+              // Start silence watchdog for next response
+              await startSilenceWatchdog(serviceClient, callId)
             }
 
           } else if (isOurAI) {
-            console.log('[webhook] AI agent spoke, not triggering response (avoiding loop)')
+            console.log('[webhook] AI agent spoke, not triggering response')
           }
         }
         break
       }
 
       case 'call.machine.detection.ended': {
-        // Handle answering machine detection
         const result = event.payload.result
         console.log('AMD result:', result)
 
-        // Store AMD result in the call record
         await serviceClient
           .from('calls')
           .update({ amd_result: result })
           .eq('id', callId)
 
-        // Check if using Realtime API bridge
-        const usingRealtimeBridgeForAmd = !!Deno.env.get('AUDIO_BRIDGE_URL')
-
         if (result === 'machine') {
           await logCallEvent(serviceClient, callId, 'status_change', 'Reached voicemail', { amd_result: result })
 
           if (telnyxApiKey) {
-            // Optionally hang up on machine
             await fetch(
               `https://api.telnyx.com/v2/calls/${event.payload.call_control_id}/actions/hangup`,
               {
@@ -731,23 +798,11 @@ serve(async (req) => {
           }
         } else if (result === 'human') {
           await logCallEvent(serviceClient, callId, 'status_change', 'Person answered', { amd_result: result })
-
-          // Only trigger legacy voice-agent if NOT using Realtime API
-          // The Realtime API bridge handles the opening greeting automatically
-          if (!usingRealtimeBridgeForAmd) {
-            const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
-            const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-            console.log('[webhook] Human detected, triggering voice agent opening')
-            await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, true)
-          } else {
-            console.log('[webhook] Human detected, Realtime API bridge handles greeting')
-          }
         }
         break
       }
 
       case 'call.dtmf.received':
-        // Log DTMF tones received
         console.log('DTMF received:', event.payload.digit)
         await logCallEvent(serviceClient, callId, 'dtmf_received', `Received tone: ${event.payload.digit}`, {
           digit: event.payload.digit
@@ -755,28 +810,20 @@ serve(async (req) => {
         break
 
       case 'streaming.started':
-        console.log('[webhook] Streaming started successfully for call:', callId)
+        console.log('[webhook] Streaming started for call:', callId)
         await logCallEvent(serviceClient, callId, 'streaming', 'Audio streaming connected', {})
         break
 
       case 'streaming.failed': {
-        // Streaming to audio bridge failed - fall back to legacy voice-agent mode
-        console.error('[webhook] Streaming FAILED for call:', callId, 'Falling back to legacy mode')
-        console.error('[webhook] Streaming failure details:', JSON.stringify(event.payload))
-
-        await logCallEvent(serviceClient, callId, 'error', 'Audio bridge connection failed, using backup voice mode', {
+        console.error('[webhook] Streaming FAILED for call:', callId)
+        await logCallEvent(serviceClient, callId, 'error', 'Audio streaming failed', {
           failure_reason: event.payload?.failure_reason || 'unknown'
         })
 
-        // Start Telnyx transcription as fallback
+        // Fallback to legacy mode
         if (telnyxApiKey) {
           await startTranscription(event.payload.call_control_id, telnyxApiKey, callId, serviceClient)
-
-          // Trigger voice agent opening greeting
-          const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
-          const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-          console.log('[webhook] Triggering legacy voice agent as fallback')
-          await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, true)
+          await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, true, false)
         }
         break
       }
@@ -785,11 +832,17 @@ serve(async (req) => {
         console.log('[webhook] Streaming stopped for call:', callId)
         break
 
-      case 'call.speak.ended': {
-        // TTS finished speaking - good time to check for timeout if in closing state
-        console.log('[webhook] Speak ended for call:', callId)
+      case 'call.speak.started':
+        console.log('[webhook] TTS started for call:', callId)
+        break
 
-        // Get call state
+      case 'call.speak.ended': {
+        console.log('[webhook] TTS ended for call:', callId)
+
+        // TTS finished - start silence watchdog to detect if callee doesn't respond
+        await startSilenceWatchdog(serviceClient, callId)
+
+        // Check closing timeout
         const { data: speakEndCallData } = await serviceClient
           .from('calls')
           .select('closing_state, closing_started_at, telnyx_call_id')
@@ -803,10 +856,8 @@ serve(async (req) => {
 
           console.log('[webhook] In closing state, seconds since closing:', secondsSinceClosing)
 
-          // If we've been in closing state for more than 10 seconds, start silence timer
-          // (The actual hangup will happen on timeout, not here - this is just logging)
           if (secondsSinceClosing > 10 && telnyxApiKey && speakEndCallData.telnyx_call_id) {
-            console.log('[webhook] Silence timeout reached (10s), hanging up')
+            console.log('[webhook] Silence timeout reached, hanging up')
             await hangupCall(
               speakEndCallData.telnyx_call_id,
               telnyxApiKey,
@@ -823,8 +874,12 @@ serve(async (req) => {
         console.log('Unhandled event type:', eventType)
     }
 
-    // After handling the event, check for closing timeout on any event
-    // This ensures we catch silence timeouts even if no specific event triggers it
+    // Check silence watchdog on every event
+    if (callId && telnyxApiKey && supabaseUrl && serviceRoleKey) {
+      await checkSilenceWatchdog(serviceClient, callId, supabaseUrl, serviceRoleKey, telnyxApiKey)
+    }
+
+    // Also check closing timeout
     if (callId && telnyxApiKey) {
       const { data: timeoutCheckCall } = await serviceClient
         .from('calls')
@@ -842,7 +897,6 @@ serve(async (req) => {
         const now = new Date()
         const secondsSinceClosing = (now.getTime() - closingStarted.getTime()) / 1000
 
-        // 10 second silence timeout
         if (secondsSinceClosing > 10) {
           console.log('[webhook] Closing timeout check: hanging up after', secondsSinceClosing, 'seconds')
           await hangupCall(
@@ -862,7 +916,7 @@ serve(async (req) => {
 
   } catch (error) {
     console.error('Webhook error:', error)
-    return new Response(JSON.stringify({ error: error.message }), {
+    return new Response(JSON.stringify({ error: (error as Error).message }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
