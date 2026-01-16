@@ -359,8 +359,12 @@ serve(async (req) => {
     )
 
     const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      throw new Error('Unauthorized')
+    if (authError) {
+      console.error('Auth error:', authError.message)
+      throw new Error(`Authentication failed: ${authError.message}`)
+    }
+    if (!user) {
+      throw new Error('No user session found - please sign in again')
     }
 
     const { messages, current_call_id, conversation_id } = await req.json()
