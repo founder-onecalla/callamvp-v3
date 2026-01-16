@@ -128,11 +128,14 @@ serve(async (req) => {
     console.log('call-start: FROM:', telnyxFromNumber)
     console.log('call-start: TO:', formattedNumber)
 
-    // Validate phone numbers before calling
-    if (!telnyxFromNumber.startsWith('+')) {
-      console.error('call-start: Invalid FROM number format - must start with +')
-      throw new Error('Invalid from number format in configuration')
+    // Format FROM number if needed (in case secret is stored without +)
+    let formattedFrom = telnyxFromNumber
+    if (!formattedFrom.startsWith('+')) {
+      formattedFrom = '+' + formattedFrom.replace(/[^\d]/g, '')
+      console.log('call-start: Reformatted FROM number to:', formattedFrom)
     }
+    
+    // Validate TO number (should already be formatted above)
     if (!formattedNumber.startsWith('+')) {
       console.error('call-start: Invalid TO number format - must start with +')
       throw new Error('Invalid destination phone number format')
@@ -141,7 +144,7 @@ serve(async (req) => {
     const telnyxPayload = {
       connection_id: telnyxConnectionId,
       to: formattedNumber,
-      from: telnyxFromNumber,
+      from: formattedFrom,
       webhook_url: webhookUrl,
       webhook_url_method: 'POST',
       client_state: btoa(JSON.stringify({ call_id: call.id, user_id: user.id })),

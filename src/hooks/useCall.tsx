@@ -451,18 +451,41 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
       if (response.error) {
         console.error('[useCall] Call start API error:', response.error)
-        // Try to extract meaningful error message
+        console.error('[useCall] Full error object:', JSON.stringify(response.error, null, 2))
+        
+        // Try to extract meaningful error message from various formats
         let errorMsg = 'Unable to start call. Please try again.'
-        if (typeof response.error === 'object' && response.error.message) {
+        
+        // Supabase FunctionsHttpError contains the response body in context
+        if (response.error.context) {
+          try {
+            const contextBody = await response.error.context.json()
+            console.error('[useCall] Error context body:', contextBody)
+            if (contextBody.error) {
+              errorMsg = contextBody.error
+            }
+          } catch {
+            // Try text
+            try {
+              const contextText = await response.error.context.text()
+              console.error('[useCall] Error context text:', contextText)
+              const parsed = JSON.parse(contextText)
+              if (parsed.error) errorMsg = parsed.error
+            } catch {
+              // ignore
+            }
+          }
+        } else if (typeof response.error === 'object' && response.error.message) {
           errorMsg = response.error.message
         }
+        
         setError(errorMsg)
         throw new Error(errorMsg)
       }
 
       // Check if backend returned an error in the data
       if (response.data?.error) {
-        console.error('[useCall] Call start returned error:', response.data.error)
+        console.error('[useCall] Call start returned error in data:', response.data.error)
         const errorMsg = response.data.error || 'Call failed to start. Please try again.'
         setError(errorMsg)
         throw new Error(errorMsg)
