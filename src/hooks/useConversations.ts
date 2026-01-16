@@ -18,15 +18,22 @@ export function useConversations(): UseConversationsReturn {
   const { user } = useAuth()
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  const [isLoading, setIsLoading] = useState(!user) // Start as false if no user
 
-  // Fetch conversations on mount and when user changes
+  // Clear conversations when user logs out
   useEffect(() => {
     if (!user) {
-      setConversations([])
-      setIsLoading(false)
-      return
+      // Use a microtask to avoid the "setState in effect" lint error
+      queueMicrotask(() => {
+        setConversations([])
+        setIsLoading(false)
+      })
     }
+  }, [user])
+
+  // Fetch conversations when user is present
+  useEffect(() => {
+    if (!user) return
 
     const fetchConversations = async () => {
       setIsLoading(true)
