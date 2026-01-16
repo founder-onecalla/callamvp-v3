@@ -53,7 +53,7 @@ export default function CallCard() {
     callCardData,
     summaryState,
     summaryRequestedAt,
-    summaryError,
+    retryCount,
     retrySummary,
   } = useCall()
 
@@ -151,7 +151,7 @@ export default function CallCard() {
         callCardData={callCardData}
         summaryState={summaryState}
         summaryRequestedAt={summaryRequestedAt}
-        summaryError={summaryError}
+        retryCount={retryCount}
         onRetry={retrySummary}
         onExpand={() => setIsExpanded(true)}
       />

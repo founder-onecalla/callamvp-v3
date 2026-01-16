@@ -12,7 +12,7 @@ interface CallRecapCardProps {
   callCardData: CallCardData | null
   summaryState: SummaryState
   summaryRequestedAt: number | null
-  summaryError: string | null
+  retryCount: number
   onRetry: () => void
   onExpand: () => void
 }
@@ -204,7 +204,7 @@ export default function CallRecapCard({
   callCardData,
   summaryState,
   summaryRequestedAt,
-  summaryError: _summaryError,
+  retryCount,
   onRetry,
   onExpand,
 }: CallRecapCardProps) {
@@ -258,11 +258,19 @@ export default function CallRecapCard({
     }, 100)
   }
 
-  // Determine what recap to show
+  // Determine what to show
   const hasAIRecap = !!callCardData?.outcome?.sentence
-  const showFallback = summaryState === 'failed' && !hasAIRecap
   const showLoading = summaryState === 'loading'
+  const showFailed = summaryState === 'failed' && !hasAIRecap
   const showIdle = summaryState === 'idle' && !hasAIRecap
+
+  // Determine retry message based on retry count
+  const getRetryMessage = () => {
+    if (retryCount === 0) return null
+    if (retryCount >= 2) return 'Still unavailable. Try again in a moment.'
+    return null
+  }
+  const retryMessage = getRetryMessage()
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm max-w-sm">
@@ -292,11 +300,17 @@ export default function CallRecapCard({
 
         {/* Loading state */}
         {showLoading && !isRetrying && (
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 border-2 border-slate-300 border-t-teal-500 rounded-full animate-spin" />
-            <span className="text-sm text-slate-500">
-              {elapsedSeconds < 15 ? 'Generating recap...' : 'Still working...'}
-            </span>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 border-2 border-slate-300 border-t-teal-500 rounded-full animate-spin" />
+              <span className="text-sm text-slate-500">
+                {elapsedSeconds < 15 ? 'Generating recap...' : 'Still working...'}
+              </span>
+            </div>
+            {/* Always show transcript access while loading */}
+            {hasTranscript && elapsedSeconds >= 5 && (
+              <p className="text-xs text-slate-400">Your transcript is saved and ready to view.</p>
+            )}
           </div>
         )}
 
@@ -308,44 +322,62 @@ export default function CallRecapCard({
           </div>
         )}
 
-        {/* Basic Recap (3 lines) when AI failed */}
-        {showFallback && !isRetrying && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">Basic recap</span>
-              <button
-                onClick={handleRetry}
-                className="text-xs font-medium text-teal-600 hover:text-teal-700 active:text-teal-800 transition-colors"
-              >
-                Retry recap
-              </button>
-            </div>
-            {/* Line A: Goal status */}
-            <p className="text-sm text-slate-900 leading-relaxed">
-              {basicRecap.lineA}
-            </p>
-            {/* Line B: Best available answer */}
-            <p className="text-sm text-slate-700 leading-relaxed">
-              {basicRecap.lineB}
-            </p>
-            {/* Evidence quote (if available) */}
-            {basicRecap.evidence && (
-              <p className="text-xs text-slate-500 italic pl-3 border-l-2 border-slate-200">
-                Evidence: {basicRecap.evidence}
+        {/* Failed state - ALWAYS show useful fallback, never raw errors */}
+        {showFailed && !isRetrying && (
+          <div className="space-y-3">
+            {/* User-friendly message - NEVER show system errors */}
+            <div className="bg-slate-50 rounded-lg px-3 py-2">
+              <p className="text-sm text-slate-600">
+                Recap is temporarily unavailable.
+                {hasTranscript && ' Your transcript is still saved.'}
               </p>
-            )}
-            {/* Line C: Next step */}
-            <p className="text-sm text-slate-600 leading-relaxed">
-              {basicRecap.lineC}
-            </p>
+              {retryMessage && (
+                <p className="text-xs text-slate-400 mt-1">{retryMessage}</p>
+              )}
+            </div>
+
+            {/* Basic Recap fallback - always provide value */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">Basic recap</span>
+                <button
+                  onClick={handleRetry}
+                  disabled={isRetrying}
+                  className="text-xs font-medium text-teal-600 hover:text-teal-700 active:text-teal-800 transition-colors disabled:opacity-50"
+                >
+                  Retry recap
+                </button>
+              </div>
+              {/* Line A: Goal status */}
+              <p className="text-sm text-slate-900 leading-relaxed">
+                {basicRecap.lineA}
+              </p>
+              {/* Line B: Best available answer */}
+              <p className="text-sm text-slate-700 leading-relaxed">
+                {basicRecap.lineB}
+              </p>
+              {/* Evidence quote (if available) */}
+              {basicRecap.evidence && (
+                <p className="text-xs text-slate-500 italic pl-3 border-l-2 border-slate-200">
+                  Evidence: {basicRecap.evidence}
+                </p>
+              )}
+              {/* Line C: Next step */}
+              <p className="text-sm text-slate-600 leading-relaxed">
+                {basicRecap.lineC}
+              </p>
+            </div>
           </div>
         )}
 
         {/* Idle state (waiting for summary to start) */}
         {showIdle && (
-          <div className="space-y-1">
+          <div className="space-y-2">
             <SkeletonText width="w-full" />
             <SkeletonText width="w-2/3" />
+            {hasTranscript && (
+              <p className="text-xs text-slate-400 mt-2">Transcript is ready while we generate the recap.</p>
+            )}
           </div>
         )}
 
@@ -365,7 +397,7 @@ export default function CallRecapCard({
         )}
       </div>
 
-      {/* Single action - Open transcript */}
+      {/* Action - Open transcript (always functional) */}
       {hasTranscript && (
         <div className="px-4 py-3">
           <button
@@ -379,6 +411,13 @@ export default function CallRecapCard({
           >
             {isOpening ? 'Opening...' : 'Open transcript'}
           </button>
+        </div>
+      )}
+
+      {/* Fallback when no transcript - still provide action */}
+      {!hasTranscript && (
+        <div className="px-4 py-3 text-center">
+          <p className="text-xs text-slate-400">No transcript available for this call.</p>
         </div>
       )}
     </div>

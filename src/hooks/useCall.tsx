@@ -21,7 +21,7 @@ interface CallContextType {
   // Summary state tracking
   summaryState: SummaryState
   summaryRequestedAt: number | null
-  summaryError: string | null
+  retryCount: number
   retrySummary: () => Promise<void>
 }
 
@@ -41,16 +41,29 @@ export function CallProvider({ children }: { children: ReactNode }) {
   // Summary state tracking
   const [summaryState, setSummaryState] = useState<SummaryState>('idle')
   const [summaryRequestedAt, setSummaryRequestedAt] = useState<number | null>(null)
-  const [summaryError, setSummaryError] = useState<string | null>(null)
+  const [retryCount, setRetryCount] = useState(0)
 
   // Track if we've already requested a summary for this call
   const summaryRequestedRef = useRef<string | null>(null)
 
+  // Cache the last successful callCardData - NEVER replace with error
+  const lastSuccessfulDataRef = useRef<CallCardData | null>(null)
+
   // Request summary function (can be called for retry)
-  const requestSummary = useCallback(async (callId: string) => {
+  const requestSummary = useCallback(async (callId: string, isRetry = false) => {
+    // If we already have successful data for this call, don't risk losing it
+    if (lastSuccessfulDataRef.current?.callId === callId && !isRetry) {
+      setSummaryState('succeeded')
+      setCallCardData(lastSuccessfulDataRef.current)
+      return
+    }
+
     setSummaryState('loading')
     setSummaryRequestedAt(Date.now())
-    setSummaryError(null)
+
+    if (isRetry) {
+      setRetryCount(prev => prev + 1)
+    }
 
     try {
       const response = await supabase.functions.invoke('call-summary', {
@@ -58,14 +71,20 @@ export function CallProvider({ children }: { children: ReactNode }) {
       })
 
       if (response.error) {
-        throw new Error(response.error.message || 'Failed to generate summary')
+        // Log the actual error for debugging but don't expose to UI
+        console.error('Summary API error:', response.error)
+        throw new Error('recap_unavailable')
       }
 
       if (response.data?.callCardData) {
-        setCallCardData(response.data.callCardData)
+        const data = response.data.callCardData
+        // Cache successful data - this is the golden copy
+        lastSuccessfulDataRef.current = data
+        setCallCardData(data)
         setSummaryState('succeeded')
+        setRetryCount(0) // Reset retry count on success
       } else {
-        throw new Error('No summary data returned')
+        throw new Error('recap_unavailable')
       }
 
       if (response.data?.summary) {
@@ -73,8 +92,14 @@ export function CallProvider({ children }: { children: ReactNode }) {
       }
     } catch (err) {
       console.error('Failed to get call summary:', err)
-      setSummaryState('failed')
-      setSummaryError(err instanceof Error ? err.message : 'Failed to generate summary')
+
+      // If we have cached successful data, keep showing it instead of error
+      if (lastSuccessfulDataRef.current?.callId === callId) {
+        setSummaryState('succeeded')
+        setCallCardData(lastSuccessfulDataRef.current)
+      } else {
+        setSummaryState('failed')
+      }
     }
   }, [])
 
@@ -82,7 +107,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const retrySummary = useCallback(async () => {
     if (!currentCall) return
     summaryRequestedRef.current = currentCall.id
-    await requestSummary(currentCall.id)
+    await requestSummary(currentCall.id, true)
   }, [currentCall, requestSummary])
 
   // Subscribe to call updates
@@ -229,10 +254,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setLastSummary(null)
     setCallConversationId(conversationId ?? null)
     summaryRequestedRef.current = null
+    lastSuccessfulDataRef.current = null // Clear cache for new call
     // Reset summary state
     setSummaryState('idle')
     setSummaryRequestedAt(null)
-    setSummaryError(null)
+    setRetryCount(0)
 
     try {
       const response = await supabase.functions.invoke('call-start', {
@@ -311,7 +337,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
         lastSummary,
         summaryState,
         summaryRequestedAt,
-        summaryError,
+        retryCount,
         retrySummary,
       }}
     >

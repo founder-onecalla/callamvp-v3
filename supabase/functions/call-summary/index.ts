@@ -79,28 +79,49 @@ serve(async (req) => {
       throw new Error('Missing authorization header')
     }
 
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+
+    if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceKey) {
+      console.error('Missing env vars:', { supabaseUrl: !!supabaseUrl, supabaseAnonKey: !!supabaseAnonKey, supabaseServiceKey: !!supabaseServiceKey })
+      throw new Error('Missing required environment variables')
+    }
+
     const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      supabaseUrl,
+      supabaseAnonKey,
       { global: { headers: { Authorization: authHeader } } }
     )
 
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
+      console.error('Auth error:', authError)
       throw new Error('Unauthorized')
     }
 
-    const { call_id } = await req.json()
+    let body
+    try {
+      body = await req.json()
+    } catch (parseError) {
+      console.error('JSON parse error:', parseError)
+      throw new Error('Invalid JSON body')
+    }
+
+    const { call_id } = body
     if (!call_id) {
       throw new Error('call_id is required')
     }
 
+    console.log('Processing call summary for call_id:', call_id)
+
     const serviceClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      supabaseUrl,
+      supabaseServiceKey
     )
 
     // Fetch all call data in parallel for speed
+    console.log('Fetching call data...')
     const [callResult, contextResult, transcriptionsResult, eventsResult] = await Promise.all([
       serviceClient.from('calls').select('*').eq('id', call_id).eq('user_id', user.id).single(),
       serviceClient.from('call_contexts').select('*, ivr_paths(*)').eq('call_id', call_id).maybeSingle(),
@@ -108,14 +129,21 @@ serve(async (req) => {
       serviceClient.from('call_events').select('*').eq('call_id', call_id).order('created_at', { ascending: true })
     ])
 
+    if (callResult.error) {
+      console.error('Call query error:', callResult.error)
+      throw new Error(`Call not found: ${callResult.error.message}`)
+    }
+
     const call = callResult.data
     const context = contextResult.data
     const transcriptions = transcriptionsResult.data || []
     const events = eventsResult.data || []
 
-    if (callResult.error || !call) {
+    if (!call) {
       throw new Error('Call not found')
     }
+
+    console.log('Call data fetched:', { callId: call.id, transcriptionCount: transcriptions.length, eventCount: events.length })
 
     // Calculate call duration
     let durationSec: number | null = null
@@ -210,6 +238,7 @@ ${transcriptText}
 Extract the summary and any key takeaways from this call.`
 
       try {
+        console.log('Calling OpenAI for summary extraction...')
         const response = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
           headers: {
@@ -230,7 +259,18 @@ Extract the summary and any key takeaways from this call.`
 
         if (response.ok) {
           const data = await response.json()
-          aiExtraction = JSON.parse(data.choices[0].message.content)
+          const content = data.choices?.[0]?.message?.content
+          if (content) {
+            try {
+              aiExtraction = JSON.parse(content)
+              console.log('AI extraction succeeded')
+            } catch (jsonError) {
+              console.error('Failed to parse AI response:', content)
+            }
+          }
+        } else {
+          const errorText = await response.text()
+          console.error('OpenAI API error:', response.status, errorText)
         }
       } catch (aiError) {
         console.error('AI extraction error:', aiError)
@@ -328,9 +368,15 @@ Extract the summary and any key takeaways from this call.`
     }
 
     // Also update the call record with the summary
-    await serviceClient.from('calls').update({
+    const updateResult = await serviceClient.from('calls').update({
       summary: outcome?.sentence || null
     }).eq('id', call_id)
+
+    if (updateResult.error) {
+      console.error('Failed to update call summary:', updateResult.error)
+    }
+
+    console.log('Call summary completed successfully for call_id:', call_id)
 
     return new Response(JSON.stringify({
       callCardData,
