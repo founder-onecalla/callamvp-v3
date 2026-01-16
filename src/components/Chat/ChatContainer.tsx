@@ -8,7 +8,7 @@ import ChatSidebar from './ChatSidebar'
 
 export default function ChatContainer() {
   const { messages, isLoading, error, sendMessage, clearMessages, loadConversation } = useChat()
-  const { currentCall } = useCall()
+  const { currentCall, callConversationId } = useCall()
   const {
     conversations,
     currentConversationId,
@@ -24,6 +24,11 @@ export default function ChatContainer() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const isFirstMessage = useRef(true)
+
+  // Debug: log whenever messages change
+  useEffect(() => {
+    console.log('[ChatContainer] messages changed, count:', messages.length, messages.map(m => m.content.substring(0, 30)))
+  }, [messages])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -93,27 +98,27 @@ export default function ChatContainer() {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header with menu button */}
-        <div className="flex-shrink-0 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
+        {/* Header with menu button - 44px touch targets for mobile */}
+        <div className="flex-shrink-0 bg-white border-b border-gray-200 px-3 py-2 flex items-center gap-2">
           <button
             onClick={() => setSidebarOpen(true)}
-            className="md:hidden p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg"
+            className="md:hidden min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
-          <h1 className="font-semibold text-gray-900 truncate">
+          <h1 className="font-semibold text-gray-900 truncate flex-1">
             {currentConversationId
               ? conversations.find((c) => c.id === currentConversationId)?.title || 'Chat'
               : 'New Chat'}
           </h1>
           <button
             onClick={handleNewChat}
-            className="ml-auto p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg"
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg"
             title="New Chat"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
           </button>
@@ -154,8 +159,8 @@ export default function ChatContainer() {
               </div>
             ))}
 
-            {/* Call Card - Inline */}
-            {currentCall && (
+            {/* Call Card - Only show in the conversation where the call was made */}
+            {currentCall && callConversationId === currentConversationId && (
               <div className="flex justify-start message-bubble">
                 <CallCard />
               </div>
@@ -188,9 +193,9 @@ export default function ChatContainer() {
         {/* Call History */}
         <CallHistory />
 
-        {/* Input Bar - Fixed at bottom */}
-        <div className="flex-shrink-0 bg-[#f8f8f8] border-t border-gray-200 px-4 py-3">
-          <form onSubmit={handleSubmit} className="max-w-2xl mx-auto flex gap-2 items-end">
+        {/* Input Bar - Fixed at bottom with safe area for home indicator */}
+        <div className="flex-shrink-0 bg-[#f8f8f8] border-t border-gray-200 px-4 pt-3 pb-safe">
+          <form onSubmit={handleSubmit} className="max-w-2xl mx-auto flex gap-2 items-end pb-3">
             <div className="flex-1 relative">
               <input
                 type="text"
@@ -198,16 +203,16 @@ export default function ChatContainer() {
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="Message"
                 disabled={isLoading}
-                className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-full text-[15px] placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+                className="w-full px-4 py-3 bg-white border border-gray-300 rounded-full text-[16px] placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
               />
             </div>
             <button
               type="submit"
               disabled={isLoading || !input.trim()}
-              className="w-9 h-9 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 rounded-full flex items-center justify-center transition-all duration-200 flex-shrink-0"
+              className="w-11 h-11 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 rounded-full flex items-center justify-center transition-all duration-200 flex-shrink-0"
             >
               <svg
-                className="w-4 h-4 text-white"
+                className="w-5 h-5 text-white"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"

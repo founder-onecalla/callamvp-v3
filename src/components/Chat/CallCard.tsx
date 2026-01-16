@@ -22,7 +22,7 @@ const eventTypeIcons: Record<string, string> = {
 }
 
 export default function CallCard() {
-  const { currentCall, transcriptions, callEvents, hangUp, sendDtmf, dismissCall } = useCall()
+  const { currentCall, transcriptions, callEvents, hangUp, sendDtmf } = useCall()
   const [isExpanded, setIsExpanded] = useState(false)
   const [showKeypad, setShowKeypad] = useState(false)
   const [duration, setDuration] = useState(0)
@@ -76,7 +76,7 @@ export default function CallCard() {
   const displayEvents = callEvents.filter(e => e.event_type !== 'transcription')
 
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden max-w-sm">
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden w-full max-w-sm">
       {/* Header - Clickable to expand */}
       <div
         className="px-4 py-3 bg-gray-50 border-b border-gray-100 cursor-pointer hover:bg-gray-100 transition-colors"
@@ -144,19 +144,19 @@ export default function CallCard() {
         </>
       )}
 
-      {/* Controls */}
+      {/* Controls - 44px minimum touch targets */}
       {currentCall.status !== 'ended' && (
         <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 space-y-2">
           <div className="flex gap-2">
             <button
               onClick={hangUp}
-              className="flex-1 py-2 bg-red-500 hover:bg-red-600 text-white rounded-full text-sm font-medium transition-all duration-200"
+              className="flex-1 min-h-[44px] bg-red-500 hover:bg-red-600 text-white rounded-full text-sm font-medium transition-all duration-200"
             >
               End Call
             </button>
             <button
               onClick={() => setShowKeypad(!showKeypad)}
-              className={`px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 ${
+              className={`px-4 min-h-[44px] rounded-full text-sm font-medium transition-all duration-200 ${
                 showKeypad
                   ? 'bg-blue-500 text-white'
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -167,7 +167,7 @@ export default function CallCard() {
             {AUDIO_RELAY_URL && currentCall.status === 'answered' && (
               <button
                 onClick={isListening ? stopListening : startListening}
-                className={`w-10 h-10 rounded-full text-sm font-medium transition-all duration-200 flex items-center justify-center ${
+                className={`w-11 h-11 rounded-full text-sm font-medium transition-all duration-200 flex items-center justify-center ${
                   isListening
                     ? 'bg-green-500 text-white'
                     : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -178,15 +178,15 @@ export default function CallCard() {
             )}
           </div>
 
-          {/* Keypad */}
+          {/* Keypad - 44px minimum touch targets */}
           {showKeypad && (
-            <div className="grid grid-cols-3 gap-1.5 pt-2">
+            <div className="grid grid-cols-3 gap-2 pt-2">
               {dtmfButtons.map((digit) => (
                 <button
                   key={digit}
                   onClick={() => sendDtmf(digit)}
                   disabled={currentCall.status !== 'answered'}
-                  className="py-2.5 bg-white hover:bg-gray-100 disabled:bg-gray-50 disabled:text-gray-300 border border-gray-200 rounded-xl text-lg font-medium transition-all duration-150"
+                  className="min-h-[44px] bg-white hover:bg-gray-100 disabled:bg-gray-50 disabled:text-gray-300 border border-gray-200 rounded-xl text-lg font-medium transition-all duration-150"
                 >
                   {digit}
                 </button>
@@ -199,27 +199,19 @@ export default function CallCard() {
       {/* Ended state */}
       {currentCall.status === 'ended' && (
         <div className="px-4 py-3 bg-gray-50 border-t border-gray-100">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400">
-                {currentCall.outcome === 'voicemail' ? '📫' : currentCall.outcome === 'completed' ? '✓' : '📞'}
-              </span>
-              <span className="text-sm text-gray-500">
-                {currentCall.outcome === 'voicemail' ? 'Left voicemail' :
-                 currentCall.outcome === 'completed' ? 'Call completed' :
-                 currentCall.outcome === 'busy' ? 'Line was busy' :
-                 currentCall.outcome === 'no_answer' ? 'No answer' : 'Call ended'}
-              </span>
-              {duration > 0 && (
-                <span className="text-xs text-gray-400">({timeDisplay})</span>
-              )}
-            </div>
-            <button
-              onClick={dismissCall}
-              className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
-            >
-              Dismiss
-            </button>
+          <div className="flex items-center gap-2">
+            <span className="text-gray-400">
+              {currentCall.outcome === 'voicemail' ? '📫' : currentCall.outcome === 'completed' ? '✓' : '📞'}
+            </span>
+            <span className="text-sm text-gray-500">
+              {currentCall.outcome === 'voicemail' ? 'Left voicemail' :
+               currentCall.outcome === 'completed' ? 'Call completed' :
+               currentCall.outcome === 'busy' ? 'Line was busy' :
+               currentCall.outcome === 'no_answer' ? 'No answer' : 'Call ended'}
+            </span>
+            {duration > 0 && (
+              <span className="text-xs text-gray-400">({timeDisplay})</span>
+            )}
           </div>
           {transcriptions.length > 0 && (
             <p className="text-xs text-gray-400 mt-2">

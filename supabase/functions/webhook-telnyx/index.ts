@@ -292,17 +292,21 @@ serve(async (req) => {
         } else {
           // Legacy mode: Telnyx transcription + voice-agent function
           console.log('[webhook] Using LEGACY mode (audio bridge disabled)')
+          console.log('[webhook] call_control_id:', event.payload.call_control_id)
 
           if (telnyxApiKey && callId) {
+            console.log('[webhook] Starting transcription...')
             await startTranscription(event.payload.call_control_id, telnyxApiKey, callId, serviceClient)
+            console.log('[webhook] Transcription started')
           }
 
           // Trigger voice agent opening greeting immediately
           // Don't wait for AMD - speak right away so the user hears something
           const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
           const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-          console.log('[webhook] Triggering voice agent opening greeting')
-          await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, true)
+          console.log('[webhook] Triggering voice agent opening greeting for call:', callId)
+          const voiceAgentResult = await triggerVoiceAgent(supabaseUrl, serviceRoleKey, callId, undefined, true)
+          console.log('[webhook] Voice agent trigger completed')
 
           // Start media streaming for Listen In feature (legacy audio relay)
           if (audioRelayUrl && telnyxApiKey) {

@@ -9,6 +9,67 @@
   --bg-bubble-other: #e9e9eb;
   --text-primary: #000000;
   --text-secondary: #8e8e93;
+
+  /* Safe area insets for notch devices */
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+}
+
+/* Safe area utility classes */
+.pt-safe {
+  padding-top: var(--safe-area-top);
+}
+
+.pb-safe {
+  padding-bottom: var(--safe-area-bottom);
+}
+
+.pl-safe {
+  padding-left: var(--safe-area-left);
+}
+
+.pr-safe {
+  padding-right: var(--safe-area-right);
+}
+
+/* Combined safe area padding */
+.px-safe {
+  padding-left: var(--safe-area-left);
+  padding-right: var(--safe-area-right);
+}
+
+.py-safe {
+  padding-top: var(--safe-area-top);
+  padding-bottom: var(--safe-area-bottom);
+}
+
+/* Min height accounting for safe areas */
+.min-h-screen-safe {
+  min-height: calc(100vh - var(--safe-area-top) - var(--safe-area-bottom));
+}
+
+/* Full height accounting for safe areas */
+.h-screen-safe {
+  height: calc(100vh - var(--safe-area-top) - var(--safe-area-bottom));
+}
+
+/* Position utilities for safe areas */
+.top-safe {
+  top: var(--safe-area-top);
+}
+
+.bottom-safe {
+  bottom: var(--safe-area-bottom);
+}
+
+.left-safe {
+  left: var(--safe-area-left);
+}
+
+.right-safe {
+  right: var(--safe-area-right);
 }
 
 body {

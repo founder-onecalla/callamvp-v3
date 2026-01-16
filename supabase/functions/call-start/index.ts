@@ -33,11 +33,11 @@ serve(async (req) => {
     }
     console.log('call-start: User authenticated', user.id)
 
-    const { phone_number, context_id } = await req.json()
+    const { phone_number, context_id, purpose } = await req.json()
     if (!phone_number) {
       throw new Error('Phone number is required')
     }
-    console.log('call-start: Phone number', phone_number, 'context_id:', context_id || 'none')
+    console.log('call-start: Phone number', phone_number, 'context_id:', context_id || 'none', 'purpose:', purpose || 'none')
 
     // Format phone number (basic cleanup)
     let formattedNumber = phone_number.replace(/[^\d+]/g, '')
@@ -69,6 +69,7 @@ serve(async (req) => {
     console.log('call-start: Call record created', call.id)
 
     // Link call context to this call if context_id provided
+    // Or create one from purpose if no context_id
     if (context_id) {
       await serviceClient
         .from('call_contexts')
@@ -79,6 +80,26 @@ serve(async (req) => {
         .eq('id', context_id)
         .eq('user_id', user.id)
       console.log('call-start: Linked call context', context_id)
+    } else if (purpose) {
+      // Create a call context from the purpose so voice-agent knows what to do
+      const { data: newContext, error: contextError } = await serviceClient
+        .from('call_contexts')
+        .insert({
+          user_id: user.id,
+          call_id: call.id,
+          intent_category: 'personal',
+          intent_purpose: purpose,
+          gathered_info: {},
+          status: 'ready'
+        })
+        .select()
+        .single()
+
+      if (contextError) {
+        console.error('call-start: Failed to create call context', contextError)
+      } else {
+        console.log('call-start: Created call context from purpose', newContext.id)
+      }
     }
 
     // Get Telnyx credentials
@@ -99,6 +120,7 @@ serve(async (req) => {
     console.log('call-start: Telnyx credentials present, initiating call...')
 
     // Initiate Telnyx call
+    // NOTE: AMD disabled temporarily for debugging - was potentially hanging up calls incorrectly
     const telnyxResponse = await fetch('https://api.telnyx.com/v2/calls', {
       method: 'POST',
       headers: {
@@ -111,7 +133,7 @@ serve(async (req) => {
         from: telnyxFromNumber,
         webhook_url: `${supabaseUrl}/functions/v1/webhook-telnyx`,
         webhook_url_method: 'POST',
-        answering_machine_detection: 'detect',
+        // answering_machine_detection: 'detect', // DISABLED for debugging
         client_state: btoa(JSON.stringify({ call_id: call.id, user_id: user.id })),
       }),
     })

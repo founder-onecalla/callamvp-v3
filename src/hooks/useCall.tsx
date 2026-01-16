@@ -5,14 +5,14 @@ import { useAuth } from '../lib/AuthContext'
 
 interface CallContextType {
   currentCall: Call | null
+  callConversationId: string | null  // Which conversation this call belongs to
   transcriptions: Transcription[]
   callEvents: CallEvent[]
   isLoading: boolean
   error: string | null
-  startCall: (phoneNumber: string, contextId?: string) => Promise<void>
+  startCall: (phoneNumber: string, contextId?: string, purpose?: string, conversationId?: string | null) => Promise<void>
   hangUp: () => Promise<void>
   sendDtmf: (digits: string) => Promise<void>
-  dismissCall: () => void
   lastSummary: string | null
 }
 
@@ -21,6 +21,7 @@ const CallContext = createContext<CallContextType | null>(null)
 export function CallProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth()
   const [currentCall, setCurrentCall] = useState<Call | null>(null)
+  const [callConversationId, setCallConversationId] = useState<string | null>(null)
   const [transcriptions, setTranscriptions] = useState<Transcription[]>([])
   const [callEvents, setCallEvents] = useState<CallEvent[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -182,8 +183,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
   }, [currentCall?.id])
 
-  const startCall = useCallback(async (phoneNumber: string, contextId?: string) => {
-    console.log('[useCall] startCall invoked with:', { phoneNumber, contextId })
+  const startCall = useCallback(async (phoneNumber: string, contextId?: string, purpose?: string, conversationId?: string | null) => {
+    console.log('[useCall] startCall invoked with:', { phoneNumber, contextId, purpose, conversationId })
     console.log('[useCall] Session state:', { hasSession: !!session, hasAccessToken: !!session?.access_token })
 
     if (!session?.access_token) {
@@ -192,12 +193,12 @@ export function CallProvider({ children }: { children: ReactNode }) {
       return
     }
 
-    console.log('[useCall] startCall invoked with:', { phoneNumber, contextId })
     setIsLoading(true)
     setError(null)
     setTranscriptions([])
     setCallEvents([])
     setLastSummary(null)
+    setCallConversationId(conversationId ?? null)  // Track which conversation owns this call
     summaryRequestedRef.current = null
 
     try {
@@ -206,6 +207,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
         body: {
           phone_number: phoneNumber,
           context_id: contextId,
+          purpose: purpose,
         },
       })
       console.log('[useCall] call-start response:', response)
@@ -266,17 +268,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
   }, [currentCall])
 
-  // Manually dismiss the call card (moves it to history)
-  const dismissCall = useCallback(() => {
-    setCurrentCall(null)
-    setCallEvents([])
-    setTranscriptions([])
-  }, [])
-
   return (
     <CallContext.Provider
       value={{
         currentCall,
+        callConversationId,
         transcriptions,
         callEvents,
         isLoading,
@@ -284,7 +280,6 @@ export function CallProvider({ children }: { children: ReactNode }) {
         startCall,
         hangUp,
         sendDtmf,
-        dismissCall,
         lastSummary,
       }}
     >

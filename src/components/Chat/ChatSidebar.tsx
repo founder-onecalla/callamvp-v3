@@ -69,21 +69,23 @@ export default function ChatSidebar({
         />
       )}
 
-      {/* Sidebar */}
+      {/* Sidebar - narrower on mobile for better UX */}
       <div
-        className={`fixed md:relative inset-y-0 left-0 z-50 w-72 bg-gray-50 border-r border-gray-200 flex flex-col transition-transform duration-200 ${
+        className={`fixed md:relative inset-y-0 left-0 z-50 w-[280px] md:w-72 bg-gray-50 border-r border-gray-200 flex flex-col transition-transform duration-200 ${
           isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
         }`}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-200">
-          <h2 className="font-semibold text-gray-900">Chats</h2>
+        {/* Header with safe area for Dynamic Island */}
+        <div className="flex items-center justify-between p-4 pt-safe border-b border-gray-200">
+          <div className="pt-3">
+            <h2 className="font-semibold text-gray-900">Chats</h2>
+          </div>
           <button
             onClick={onNewChat}
-            className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-lg transition-colors"
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-lg transition-colors"
             title="New Chat"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
           </button>
@@ -183,12 +185,12 @@ export default function ChatSidebar({
           )}
         </div>
 
-        {/* Close button for mobile */}
+        {/* Close button for mobile - positioned below safe area */}
         <button
           onClick={onClose}
-          className="md:hidden absolute top-4 right-4 p-2 text-gray-500 hover:text-gray-700"
+          className="md:hidden absolute top-safe right-2 mt-3 min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-500 hover:text-gray-700"
         >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>

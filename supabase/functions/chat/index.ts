@@ -9,7 +9,7 @@ const corsHeaders = {
 const functions = [
   {
     name: "place_call",
-    description: "Place an outbound phone call. Only call this when you have gathered ALL required information for the call purpose.",
+    description: "Place an outbound phone call. ALWAYS include the full purpose of the call so the voice AI knows what to say.",
     parameters: {
       type: "object",
       properties: {
@@ -19,14 +19,14 @@ const functions = [
         },
         purpose: {
           type: "string",
-          description: "The purpose or reason for the call"
+          description: "REQUIRED: The COMPLETE purpose of the call. Be specific! Example: 'wish Sarah happy birthday and ask what time she gets home tomorrow' NOT just 'birthday call'"
         },
         context_id: {
           type: "string",
           description: "The call context ID if one was created during info gathering"
         }
       },
-      required: ["phone_number"]
+      required: ["phone_number", "purpose"]
     }
   },
   {
@@ -190,8 +190,17 @@ Before placing calls, gather necessary information conversationally:
 2. Check saved memories for relevant info
 3. Ask for any missing required information naturally
 4. When ready, ask user to confirm (e.g., "Ready to call?")
-5. **CRITICAL**: When user confirms (yes/ok/ready/proceed/etc.), IMMEDIATELY call the place_call function. Do not just say you're calling - USE THE FUNCTION.
+5. **CRITICAL**: When user confirms (yes/ok/ready/proceed/etc.), IMMEDIATELY call place_call with:
+   - phone_number: the number to call
+   - purpose: THE FULL PURPOSE FROM THE USER'S ORIGINAL REQUEST (e.g., "wish Sarah happy birthday and ask what time she gets home tomorrow")
+   - Do NOT summarize or shorten the purpose - include EVERYTHING the user asked for
 6. Save any new information they provide
+
+## IMPORTANT: place_call purpose parameter
+When calling place_call, the "purpose" parameter is what the voice AI will say on the call.
+- If user says "call mom to wish her happy birthday" → purpose: "wish her happy birthday"
+- If user says "call 555-1234 to ask Sarah what time she gets home" → purpose: "ask Sarah what time she gets home"
+- NEVER leave purpose empty or vague - the voice AI needs it to know what to say!
 
 ## Tone
 Be conversational, confident, and helpful. Keep responses concise. You are a capable assistant that gets things done.
@@ -423,6 +432,9 @@ serve(async (req) => {
     if (choice.message.function_call) {
       const functionCall = choice.message.function_call
       const functionArgs = JSON.parse(functionCall.arguments)
+
+      console.log('[chat] Function call:', functionCall.name)
+      console.log('[chat] Function args:', JSON.stringify(functionArgs))
 
       result.function_call = {
         name: functionCall.name,

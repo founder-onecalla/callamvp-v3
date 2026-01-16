@@ -19,41 +19,26 @@ interface CallContext {
   gathered_info: Record<string, string>
 }
 
-const systemPrompt = `You are a friendly, warm AI assistant making a phone call on behalf of a user. You speak naturally like a real person - casual but professional.
+const systemPrompt = `You are making a phone call on behalf of someone. Speak naturally like a real person.
 
-## CRITICAL: NEVER INVENT OR HALLUCINATE INFORMATION
-- ONLY use information explicitly provided in the Call Context below
-- If you don't have someone's name, say "I'm calling on behalf of a customer" - don't make up names
-- If you don't have specific details, be vague rather than inventing them
-- NEVER guess account numbers, names, addresses, or other specific information
-- If asked for info you don't have, say "Let me check on that" or "I'll need to get that information"
-- Inventing information will destroy trust and credibility on the call
+## CRITICAL RULES - READ CAREFULLY
+1. Your ONLY job is to accomplish the PURPOSE stated below
+2. NEVER use placeholder text like [Your Name] or [specific issue] - those are FORBIDDEN
+3. NEVER invent names, account numbers, or details not given
+4. If the purpose says "wish happy birthday to Sarah" - say exactly that: "Hi Sarah! Happy birthday!"
+5. If calling a person (not a business), be warm and personal
+6. Keep responses SHORT - 1-2 sentences max
 
-## Your Personality
-- Warm and friendly, like talking to a helpful neighbor
-- Use natural speech patterns ("Hey", "Sure thing", "Got it", "Hmm, let me think...")
-- Be conversational, not robotic
-- Show empathy and patience
-- Keep responses concise - this is a phone call, not an essay
+## Opening Line Examples
+- Purpose: "wish Sarah happy birthday and ask what time she gets home" → "Hey Sarah! Happy birthday! Quick question - what time are you getting home tomorrow?"
+- Purpose: "ask about internet outage" → "Hi, I'm calling about an internet service issue."
+- Purpose: "make a reservation" → "Hi, I'd like to make a reservation please."
 
-## Call Guidelines
-- Introduce yourself naturally based ONLY on the context provided below
-- Listen carefully to what they say and respond appropriately
-- If they ask you to hold, say something like "Sure, I'll wait"
-- If you don't understand something, ask them to repeat
-- Be polite but persistent in achieving the goal
-- When the goal is achieved, thank them warmly and end the call
-
-## IVR/Automated Systems
-- If you hear menu options, choose the appropriate one
-- Say the number clearly: "I'll press 1" or just respond with the selection
-- If asked to enter numbers (account, phone), say them clearly with pauses
-
-## What NOT to do
-- Don't be overly formal or stiff
-- Don't give long speeches - keep it conversational
-- Don't say "As an AI" or reveal you're an AI unless directly asked
-- Don't repeat yourself unnecessarily
+## During the Call
+- Listen and respond naturally
+- If asked who you are: "I'm calling on behalf of a friend"
+- If they ask you to hold: "Sure, no problem"
+- When done, say goodbye warmly
 
 ## Current Call Context
 {CALL_CONTEXT}
@@ -61,7 +46,7 @@ const systemPrompt = `You are a friendly, warm AI assistant making a phone call 
 ## Conversation So Far
 {CONVERSATION_HISTORY}
 
-Generate your next response. Keep it natural and brief (1-2 sentences typically). If this is the opening, introduce yourself and state the purpose.`
+Generate your response. If this is the opening, jump straight into the PURPOSE - don't waste time with generic intros.`
 
 async function generateResponse(
   openaiKey: string,
@@ -70,13 +55,17 @@ async function generateResponse(
   isOpening: boolean
 ): Promise<string> {
   // Build context string
-  let contextStr = 'No specific context available.'
+  let contextStr = 'No specific context available - just have a friendly conversation.'
   if (callContext) {
+    // Make the PURPOSE very prominent so the AI uses it
+    const purpose = callContext.intent_purpose || 'General conversation'
     contextStr = `
-Purpose: ${callContext.intent_purpose || 'General inquiry'}
-Company: ${callContext.company_name || 'Unknown'}
-Category: ${callContext.intent_category || 'General'}
-User Info: ${JSON.stringify(callContext.gathered_info || {})}`
+**PURPOSE OF THIS CALL**: ${purpose}
+Company/Person: ${callContext.company_name || 'Personal call'}
+Additional Info: ${JSON.stringify(callContext.gathered_info || {})}`
+    console.log('[voice-agent] Using call context:', { purpose, company: callContext.company_name })
+  } else {
+    console.log('[voice-agent] WARNING: No call context found!')
   }
 
   // Build conversation history string
@@ -220,8 +209,14 @@ serve(async (req) => {
     console.log('[voice-agent] Generated response:', responseText)
 
     // Play audio via Telnyx speak command (uses Telnyx's built-in TTS)
-    // Note: ElevenLabs TTS removed - was generating audio but not using it
+    console.log('[voice-agent] Call data:', {
+      call_id: call.id,
+      telnyx_call_id: call.telnyx_call_id,
+      status: call.status
+    })
+
     if (call.telnyx_call_id) {
+      console.log('[voice-agent] Sending speak command to Telnyx...')
       // Use Telnyx speak command
       const speakResponse = await fetch(
         `https://api.telnyx.com/v2/calls/${call.telnyx_call_id}/actions/speak`,
@@ -239,13 +234,16 @@ serve(async (req) => {
         }
       )
 
+      const speakResponseText = await speakResponse.text()
+      console.log('[voice-agent] Telnyx speak response:', speakResponse.status, speakResponseText)
+
       if (!speakResponse.ok) {
-        const error = await speakResponse.text()
-        console.error('[voice-agent] Telnyx speak error:', error)
-        // Don't throw - we still want to log the event
+        console.error('[voice-agent] Telnyx speak FAILED:', speakResponseText)
       } else {
-        console.log('[voice-agent] Speech sent to Telnyx')
+        console.log('[voice-agent] Speech successfully sent to Telnyx')
       }
+    } else {
+      console.error('[voice-agent] No telnyx_call_id found - cannot speak!')
     }
 
     // Log agent speech as event
