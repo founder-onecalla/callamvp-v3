@@ -21,24 +21,29 @@ interface CallContext {
 
 const systemPrompt = `You are making a phone call on behalf of someone. Speak naturally like a real person.
 
-## CRITICAL RULES - READ CAREFULLY
+## CRITICAL RULES
 1. Your ONLY job is to accomplish the PURPOSE stated below
-2. NEVER use placeholder text like [Your Name] or [specific issue] - those are FORBIDDEN
+2. NEVER use placeholder text like [Your Name] or [specific issue]
 3. NEVER invent names, account numbers, or details not given
-4. If the purpose says "wish happy birthday to Sarah" - say exactly that: "Hi Sarah! Happy birthday!"
-5. If calling a person (not a business), be warm and personal
-6. Keep responses SHORT - 1-2 sentences max
+4. Keep responses SHORT - 1-2 sentences max
 
-## Opening Line Examples
-- Purpose: "wish Sarah happy birthday and ask what time she gets home" → "Hey Sarah! Happy birthday! Quick question - what time are you getting home tomorrow?"
-- Purpose: "ask about internet outage" → "Hi, I'm calling about an internet service issue."
-- Purpose: "make a reservation" → "Hi, I'd like to make a reservation please."
+## When to END the call (say goodbye and set end_call: true):
+- You accomplished the PURPOSE (got the answer, delivered the message, etc.)
+- They say goodbye, "talk to you later", "thanks bye", etc.
+- They ask you to call back later
+- The conversation has naturally concluded
+- They seem confused or want to end the call
+
+## When to CONTINUE (set end_call: false):
+- Still waiting for information you need
+- They asked a question you need to answer
+- The PURPOSE is not yet accomplished
 
 ## During the Call
 - Listen and respond naturally
 - If asked who you are: "I'm calling on behalf of a friend"
 - If they ask you to hold: "Sure, no problem"
-- When done, say goodbye warmly
+- When ending: Say a warm goodbye like "Thanks so much! Take care!" or "Alright, bye!"
 
 ## Current Call Context
 {CALL_CONTEXT}
@@ -46,14 +51,19 @@ const systemPrompt = `You are making a phone call on behalf of someone. Speak na
 ## Conversation So Far
 {CONVERSATION_HISTORY}
 
-Generate your response. If this is the opening, jump straight into the PURPOSE - don't waste time with generic intros.`
+Respond with JSON: {"response": "your spoken words", "end_call": true/false}`
+
+interface AgentResponse {
+  response: string
+  end_call: boolean
+}
 
 async function generateResponse(
   openaiKey: string,
   callContext: CallContext | null,
   conversationHistory: ConversationTurn[],
   isOpening: boolean
-): Promise<string> {
+): Promise<AgentResponse> {
   // Build context string
   let contextStr = 'No specific context available - just have a friendly conversation.'
   if (callContext) {
@@ -91,13 +101,14 @@ Additional Info: ${JSON.stringify(callContext.gathered_info || {})}`
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'gpt-4o', // Faster than gpt-4-turbo, same quality for short responses
+      model: 'gpt-4o',
       messages: [
         { role: 'system', content: prompt },
         { role: 'user', content: userMessage }
       ],
       temperature: 0.8,
-      max_tokens: 150,
+      max_tokens: 200,
+      response_format: { type: 'json_object' },
     }),
   })
 
@@ -106,7 +117,21 @@ Additional Info: ${JSON.stringify(callContext.gathered_info || {})}`
   }
 
   const data = await response.json()
-  return data.choices[0].message.content
+  const content = data.choices[0].message.content
+
+  try {
+    const parsed = JSON.parse(content) as AgentResponse
+    return {
+      response: parsed.response || content,
+      end_call: parsed.end_call || false
+    }
+  } catch {
+    // If JSON parsing fails, treat as plain text response
+    return {
+      response: content,
+      end_call: false
+    }
+  }
 }
 
 serve(async (req) => {
@@ -199,14 +224,18 @@ serve(async (req) => {
     console.log('[voice-agent] Conversation history length:', conversationHistory.length)
 
     // Generate AI response
-    const responseText = await generateResponse(
+    const agentResponse = await generateResponse(
       openaiKey,
       context as CallContext | null,
       conversationHistory,
       is_opening
     )
 
+    const responseText = agentResponse.response
+    const shouldEndCall = agentResponse.end_call
+
     console.log('[voice-agent] Generated response:', responseText)
+    console.log('[voice-agent] Should end call:', shouldEndCall)
 
     // Play audio via Telnyx speak command (uses Telnyx's built-in TTS)
     console.log('[voice-agent] Call data:', {
@@ -241,6 +270,31 @@ serve(async (req) => {
         console.error('[voice-agent] Telnyx speak FAILED:', speakResponseText)
       } else {
         console.log('[voice-agent] Speech successfully sent to Telnyx')
+
+        // If AI decided to end call, hang up after a short delay for speech to finish
+        if (shouldEndCall) {
+          console.log('[voice-agent] Ending call after goodbye...')
+          // Wait 3 seconds for the goodbye to be spoken
+          await new Promise(resolve => setTimeout(resolve, 3000))
+
+          const hangupResponse = await fetch(
+            `https://api.telnyx.com/v2/calls/${call.telnyx_call_id}/actions/hangup`,
+            {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${telnyxApiKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({}),
+            }
+          )
+
+          if (hangupResponse.ok) {
+            console.log('[voice-agent] Call ended successfully')
+          } else {
+            console.error('[voice-agent] Failed to hang up:', await hangupResponse.text())
+          }
+        }
       }
     } else {
       console.error('[voice-agent] No telnyx_call_id found - cannot speak!')
@@ -251,12 +305,13 @@ serve(async (req) => {
       call_id,
       event_type: 'agent_speech',
       description: responseText,
-      metadata: { is_opening }
+      metadata: { is_opening, end_call: shouldEndCall }
     })
 
     return new Response(JSON.stringify({
       success: true,
-      response: responseText
+      response: responseText,
+      end_call: shouldEndCall
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
