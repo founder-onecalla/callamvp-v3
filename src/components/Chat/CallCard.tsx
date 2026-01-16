@@ -4,6 +4,7 @@ import { useAudioStream } from '../../hooks/useAudioStream'
 import CallCardExpanded from './CallCardExpanded'
 import CallTranscriptView from './CallTranscriptView'
 import CallRecapCard from './CallRecapCard'
+import TranscriptOnlyView from './TranscriptOnlyView'
 import type { CallCardStatus } from '../../lib/types'
 
 const dtmfButtons = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#']
@@ -109,9 +110,21 @@ export default function CallCard() {
     .filter(t => t.text && t.text.trim().length > 0)
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 
-  // If call ended and user wants expanded view with full callCardData
-  if (currentCall.status === 'ended' && callCardData && isExpanded) {
-    return <CallCardExpanded data={callCardData} onCollapse={() => setIsExpanded(false)} />
+  // If call ended and user wants expanded view
+  if (currentCall.status === 'ended' && isExpanded) {
+    // If we have full callCardData, show the rich expanded view
+    if (callCardData) {
+      return <CallCardExpanded data={callCardData} onCollapse={() => setIsExpanded(false)} />
+    }
+    // Otherwise show transcript-only view (works even when AI summary fails)
+    return (
+      <TranscriptOnlyView
+        phoneNumber={currentCall.phone_number}
+        endedAt={currentCall.ended_at}
+        turns={transcriptTurns}
+        onClose={() => setIsExpanded(false)}
+      />
+    )
   }
 
   // If call ended - show recap card with progressive loading
