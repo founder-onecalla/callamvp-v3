@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import type { Conversation } from '../../lib/types'
 import { useCallHistory, type CallWithTranscripts } from '../../hooks/useCallHistory'
+import DropdownPortal from '../DropdownPortal'
 
 interface ChatSidebarProps {
   conversations: Conversation[]
@@ -84,6 +85,15 @@ export default function ChatSidebar({
   const [editTitle, setEditTitle] = useState('')
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const [selectedCallId, setSelectedCallId] = useState<string | null>(null)
+
+  // Ref to store the active kebab menu trigger button
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null)
+
+  // Handler to open menu and set trigger ref
+  const handleOpenMenu = useCallback((convId: string, buttonElement: HTMLButtonElement) => {
+    menuTriggerRef.current = buttonElement
+    setMenuOpenId(menuOpenId === convId ? null : convId)
+  }, [menuOpenId])
 
   // Call history hook
   const {
@@ -247,7 +257,7 @@ export default function ChatSidebar({
                           <button
                             onClick={(e) => {
                               e.stopPropagation()
-                              setMenuOpenId(menuOpenId === conv.id ? null : conv.id)
+                              handleOpenMenu(conv.id, e.currentTarget)
                             }}
                             className="p-1.5 text-gray-400 hover:text-gray-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"
                           >
@@ -258,23 +268,27 @@ export default function ChatSidebar({
                             </svg>
                           </button>
 
-                          {/* Dropdown menu */}
-                          {menuOpenId === conv.id && (
-                            <div className="absolute right-0 top-8 w-32 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-10">
-                              <button
-                                onClick={() => handleStartRename(conv)}
-                                className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                              >
-                                Rename
-                              </button>
-                              <button
-                                onClick={() => handleDelete(conv.id)}
-                                className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          )}
+                          {/* Dropdown menu - rendered via portal to avoid stacking context issues */}
+                          <DropdownPortal
+                            isOpen={menuOpenId === conv.id}
+                            onClose={() => setMenuOpenId(null)}
+                            triggerRef={menuTriggerRef}
+                            align="right"
+                            className="w-32"
+                          >
+                            <button
+                              onClick={() => handleStartRename(conv)}
+                              className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                            >
+                              Rename
+                            </button>
+                            <button
+                              onClick={() => handleDelete(conv.id)}
+                              className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+                            >
+                              Delete
+                            </button>
+                          </DropdownPortal>
                         </div>
                       )}
                     </div>
